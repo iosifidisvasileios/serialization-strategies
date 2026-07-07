@@ -1,0 +1,35 @@
+[project]
+name = "serialization-strategies"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.13"
+dependencies = [
+    "pandas==2.3.3",
+    "jupyter==1.1.1",
+    "ipykernel==7.3.0",
+    "torch==2.9.1+cu130",
+    "torchvision==0.24.1+cu130",
+    "scikit-learn==1.9.0",
+    "accelerate==1.14.0",
+    "datasets==3.6.0",
+    "mlflow==3.14.0",
+    "transformers==5.5.0",
+]
+
+[tool.uv]
+environments = [
+    "sys_platform == 'linux'",
+]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu130", marker = "sys_platform == 'linux'" },
+]
+torchvision = [
+    { index = "pytorch-cu130", marker = "sys_platform == 'linux'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
