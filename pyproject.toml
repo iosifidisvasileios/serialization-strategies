@@ -2,7 +2,7 @@
 name = "serialization-strategies"
 version = "0.1.0"
 description = "Add your description here"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 dependencies = [
     "pandas==2.3.3",
     "jupyter==1.1.1",
