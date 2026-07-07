@@ -4,20 +4,21 @@ This project evaluates different serialization strategies for token classificati
 
 ## Overview
 
-The main experiment runner (`src/execute_experiments.py`) evaluates each serialization method on each dataset using cross-validation with transformer models. The framework supports:
+The main experiment runner (`execute_experiments_main_stratified_cv.py`) evaluates each serialization method on each dataset using cross-validation with transformer models. The framework supports:
 
 - **Multiple serialization strategies** for converting structured document OCR data into token sequences
 - **Cross-validation evaluation** with train/validation/test splits
 - **MLflow tracking** for experiment reproducibility and analysis
-- **Multiple document datasets** including charity reports, invoices, NDAs, and SEC filings
+- **Multiple document datasets** including charity reports, FCC invoices, NDAs, ad buy forms, multi-documents, and registration forms
 - **Configurable transformer models** from HuggingFace
 
 ## Project Structure
 
 ```
 serialization-strategies/
+├── execute_experiments_main_stratified_cv.py  # Main experiment runner (root)
+├── run_eval.sh                                 # Evaluation script
 ├── src/
-│   ├── execute_experiments.py    # Main experiment runner
 │   ├── datasets/                  # Dataset loaders
 │   │   ├── base_loader.py        # Base dataset loader class
 │   │   ├── charity_loader.py     # Charity report dataset
@@ -48,7 +49,7 @@ serialization-strategies/
 ├── data/                         # Data directory
 │   └── processed/               # Processed datasets
 ├── runs/                         # Model training runs
-├── results/                      # Experiment results
+├── results_*/                    # Experiment results (per dataset)
 ├── mlflow.db                     # MLflow tracking database
 ├── mlartifacts/                  # MLflow artifacts
 └── pyproject.toml               # Project dependencies
@@ -56,7 +57,7 @@ serialization-strategies/
 
 ## Main Components
 
-### Experiment Runner (`src/execute_experiments.py`)
+### Experiment Runner (`execute_experiments_main_stratified_cv.py`)
 
 The experiment runner orchestrates the evaluation of serialization strategies:
 
@@ -66,33 +67,30 @@ The experiment runner orchestrates the evaluation of serialization strategies:
 - **Evaluation**: Computes comprehensive metrics including accuracy, F1 scores, and per-label reports
 - **MLflow logging**: Tracks all experiments, parameters, and results
 
-Key configuration options (at the top of `execute_experiments.py`):
+Key configuration options (at the top of `execute_experiments_main_stratified_cv.py`):
 
 ```python
 # Dataset and strategy selection
-AUTO_DISCOVER_DATASETS = True
-DATASETS_TO_RUN = "all"  # or specific dataset names
-STRATEGIES_TO_RUN = ["column_aware"]  # or "all"
+datasets_to_run = "all"  # or specific dataset names
+strategies_to_run = ["column_aware"]  # or "all"
 
 # Cross-validation settings
-N_FOLDS = 2
-TRAIN_RATIO = 0.80
-VAL_RATIO = 0.10
-TEST_RATIO = 0.10
-SPLIT_SEED = 42
+n_folds = 5
+split_seed = 42
+validation_fraction_of_train = 0.10
 
 # Model configuration
-MODEL_REGISTRY = [
+model_registry = [
     ModelSpec("bert-mlsm", "SzegedAI/bert-medium-mlsm"),
     # Add more models here
 ]
 
 # Training hyperparameters
-MAX_LENGTH = 512
-WORD_WINDOW_SIZE = 384
-NUM_TRAIN_EPOCHS = 20
-LEARNING_RATE = 5e-5
-BATCH_SIZE = 8
+max_length = 512
+word_window_size = 384
+num_train_epochs = 20
+learning_rate = 5e-5
+per_device_train_batch_size = 8
 ```
 
 ### Serialization Strategies
@@ -123,6 +121,9 @@ The framework includes loaders for various document datasets:
 - **Charity reports**: Annual charity report documents
 - **FCC invoices**: Federal Communications Commission invoices
 - **NDAs**: Non-disclosure agreements
+- **Ad buy forms**: Advertisement purchase forms
+- **Multi-documents**: Multi-page document collections
+- **Registration forms**: Various registration form documents
 - **Resource contracts**: Resource extraction contracts
 - **SEC S1 filings**: Securities and Exchange Commission S1 registration statements
 
@@ -160,27 +161,51 @@ pip install -r requirements.txt  # if available
 
 1. **Prepare datasets**: Ensure processed datasets are in `data/processed/<dataset_name>/<strategy>/all.jsonl`
 
-2. **Configure experiment**: Edit `src/execute_experiments.py` to set:
-   - `DATASETS_TO_RUN`: Which datasets to evaluate
-   - `STRATEGIES_TO_RUN`: Which serialization strategies to test
-   - `MODEL_REGISTRY`: Which models to use
+2. **Configure experiment**: Edit `execute_experiments_main_stratified_cv.py` to set:
+   - `datasets_to_run`: Which datasets to evaluate
+   - `strategies_to_run`: Which serialization strategies to test
+   - `model_registry`: Which models to use
    - Training hyperparameters
 
 3. **Run experiments**:
 
 ```bash
-python src/execute_experiments.py
+python execute_experiments_main_stratified_cv.py
 ```
+
+### Command Line Arguments
+
+The experiment runner supports command-line arguments:
+
+```bash
+python execute_experiments_main_stratified_cv.py --datasets <dataset_names> --strategies <strategy_names> --models <model_names> --dry-run
+```
+
+- `--datasets`: Comma-separated list of dataset names (e.g., "charity_reports,fcc_invoices")
+- `--strategies`: Comma-separated list of strategy names (e.g., "column_aware,plain_text") or "all"
+- `--models`: Comma-separated list of model names (e.g., "bert-mlsm,deberta_v3_small")
+- `--dry-run`: Perform a dry run without training
+
+### Batch Evaluation
+
+Use the provided `run_eval.sh` script to run experiments on multiple datasets:
+
+```bash
+bash run_eval.sh
+```
+
+The script contains pre-configured commands for all datasets with multiple models.
 
 ### Expected Output
 
 The experiment runner generates:
 
-- **Results CSVs** in `results/`:
-  - `strategy_model_fold_results.csv`: Per-fold results
-  - `strategy_model_cv_summary.csv`: Cross-validation summary
-  - `<run_id>_per_label_test_report.csv`: Per-label classification reports
+- **Results CSVs** in `results_<dataset_name>/` (per dataset):
+  - `strategy_split_summary.csv`: Summary of strategy and split information
   - `<dataset>_cv_doc_split_assignments.csv`: Cross-validation split assignments
+  - `chunk_summary.csv`: Summary of chunked documents
+  - `dataset_read_summary.csv`: Dataset loading statistics
+  - `label_map.csv`: Label mapping information
 
 - **Model checkpoints** in `runs/`:
   - Best model checkpoints for each fold
@@ -245,15 +270,15 @@ The framework computes comprehensive metrics:
 
 ### Training Configuration
 
-Key training parameters in `execute_experiments.py`:
+Key training parameters in `execute_experiments_main_stratified_cv.py`:
 
-- `NUM_TRAIN_EPOCHS`: Number of training epochs
-- `LEARNING_RATE`: Learning rate for optimizer
-- `PER_DEVICE_TRAIN_BATCH_SIZE`: Batch size per device
-- `MAX_LENGTH`: Maximum sequence length
-- `WORD_WINDOW_SIZE`: Window size for chunking documents
-- `MIXED_PRECISION`: Precision mode ("auto", "fp16", "bf16", "fp32")
-- `EARLY_STOPPING_PATIENCE`: Patience for early stopping
+- `num_train_epochs`: Number of training epochs
+- `learning_rate`: Learning rate for optimizer
+- `per_device_train_batch_size`: Batch size per device
+- `max_length`: Maximum sequence length
+- `word_window_size`: Window size for chunking documents
+- `mixed_precision`: Precision mode ("auto", "fp16", "bf16", "fp32")
+- `early_stopping_patience`: Patience for early stopping
 
 ### Quiet Mode
 
@@ -297,10 +322,10 @@ class MySerializer(BaseSerializer):
 
 ### Adding a New Model
 
-Add to `MODEL_REGISTRY` in `execute_experiments.py`:
+Add to `model_registry` in `execute_experiments_main_stratified_cv.py`:
 
 ```python
-MODEL_REGISTRY = [
+model_registry = [
     ModelSpec(
         name="my-model",
         model_name_or_path="huggingface/model-name",
