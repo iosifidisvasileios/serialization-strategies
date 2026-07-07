@@ -130,7 +130,18 @@ class ExperimentConfig:
         self.project_root = Path(self.project_root).resolve()
         self.processed_datasets_root = Path(self.processed_datasets_root or self.project_root / "data" / "processed").resolve()
         self.runs_root = Path(self.runs_root or self.project_root / "runs").resolve()
-        self.results_root = Path(self.results_root or self.project_root / "results").resolve()
+        # self.results_root = Path(self.results_root or self.project_root / "results" + "_".join(self.datasets_to_run)).resolve()
+        dataset_suffix = (
+            "all"
+            if self.datasets_to_run == "all"
+            else "_".join(str(x) for x in self.datasets_to_run)
+        )
+
+        self.results_root = Path(
+            self.results_root or self.project_root / f"results_{dataset_suffix}"
+        ).resolve()
+
+
         self.mlflow_db_path = Path(self.mlflow_db_path or self.project_root / "mlflow.db").resolve()
         self.mlflow_artifact_root = Path(self.mlflow_artifact_root or self.project_root / "mlartifacts").resolve()
         if self.mlflow_tracking_uri is None:
