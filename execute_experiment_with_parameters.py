@@ -21,6 +21,7 @@ import mlflow
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn.functional as F
 from datasets import Dataset
 from mlflow.tracking import MlflowClient
 from sklearn.metrics import accuracy_score, classification_report, precision_recall_fscore_support
@@ -96,6 +97,9 @@ class ExperimentConfig:
     gradient_accumulation_steps: int = 1
     lr_scheduler_type: str = "linear"
     max_grad_norm: float = 1.0
+    loss_function: str = "cross_entropy"  # "cross_entropy" or "focal"
+    focal_gamma: float = 2.0
+    focal_alpha: Optional[float] = None  # If set, non-O alpha; O gets 1-alpha.
 
     best_model_metric: str = "macro_f1"
     best_model_greater_is_better: bool = True
@@ -111,7 +115,7 @@ class ExperimentConfig:
     quiet_training: bool = True
     suppress_model_load_warnings: bool = True
     suppress_train_stdout_stderr: bool = True
-    show_run_progress: bool = False
+    show_run_progress: bool = True
     transformers_verbosity: str = "error"
     datasets_verbosity: str = "error"
     trainer_logging_strategy: str = "no"
@@ -127,6 +131,16 @@ class ExperimentConfig:
     ignore_label: int = -100
 
     def __post_init__(self) -> None:
+
+        self.loss_function = str(self.loss_function).lower()
+        if self.loss_function not in {"cross_entropy", "focal"}:
+            raise ValueError(f"loss_function must be 'cross_entropy' or 'focal', got {self.loss_function!r}.")
+        if self.focal_gamma < 0:
+            raise ValueError(f"focal_gamma must be >= 0, got {self.focal_gamma}.")
+        if self.focal_alpha is not None and not 0.0 <= float(self.focal_alpha) <= 1.0:
+            raise ValueError(f"focal_alpha must be between 0 and 1 when provided, got {self.focal_alpha}.")
+
+
         self.project_root = Path(self.project_root).resolve()
         self.processed_datasets_root = Path(self.processed_datasets_root or self.project_root / "data" / "processed").resolve()
         self.runs_root = Path(self.runs_root or self.project_root / "runs").resolve()
@@ -138,7 +152,7 @@ class ExperimentConfig:
         )
 
         self.results_root = Path(
-            self.results_root or self.project_root / f"results_{dataset_suffix}"
+            self.results_root or self.project_root / f"results_{dataset_suffix}_{self.loss_function}"
         ).resolve()
 
 
@@ -146,6 +160,7 @@ class ExperimentConfig:
         self.mlflow_artifact_root = Path(self.mlflow_artifact_root or self.project_root / "mlartifacts").resolve()
         if self.mlflow_tracking_uri is None:
             self.mlflow_tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", f"sqlite:///{self.mlflow_db_path.as_posix()}")
+
 
     def to_serializable_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -176,6 +191,89 @@ class ExperimentState:
 
     fold_results: list[dict[str, Any]] = field(default_factory=list)
     per_label_report_paths: list[Path] = field(default_factory=list)
+
+
+def focal_loss_for_token_classification(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    *,
+    gamma: float,
+    alpha: Optional[float],
+    ignore_index: int,
+    o_label_id: Optional[int],
+) -> torch.Tensor:
+    """Focal loss for token classification with ignored labels.
+
+    alpha is optional. When provided, it is applied in a binary-style way:
+    non-O labels receive alpha and O labels receive 1-alpha. For imbalanced
+    BIO tagging where O dominates, use alpha > 0.5 to upweight entity tokens.
+    """
+    num_labels = logits.shape[-1]
+    flat_logits = logits.reshape(-1, num_labels)
+    flat_labels = labels.reshape(-1)
+
+    active_mask = flat_labels != ignore_index
+    if not torch.any(active_mask):
+        return flat_logits.sum() * 0.0
+
+    active_logits = flat_logits[active_mask]
+    active_labels = flat_labels[active_mask]
+
+    ce_loss = F.cross_entropy(active_logits, active_labels, reduction="none")
+    pt = torch.exp(-ce_loss)
+    loss = ((1.0 - pt) ** gamma) * ce_loss
+
+    if alpha is not None:
+        alpha_value = float(alpha)
+        if o_label_id is None:
+            alpha_t = torch.full_like(loss, alpha_value)
+        else:
+            alpha_t = torch.where(
+                active_labels == int(o_label_id),
+                torch.full_like(loss, 1.0 - alpha_value),
+                torch.full_like(loss, alpha_value),
+            )
+        loss = alpha_t * loss
+
+    return loss.mean()
+
+
+class FocalLossTrainer(Trainer):
+    """Trainer variant that replaces cross-entropy with focal loss."""
+
+    def __init__(
+        self,
+        *args,
+        focal_gamma: float = 2.0,
+        focal_alpha: Optional[float] = None,
+        ignore_index: int = -100,
+        o_label_id: Optional[int] = None,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.focal_gamma = focal_gamma
+        self.focal_alpha = focal_alpha
+        self.ignore_index = ignore_index
+        self.o_label_id = o_label_id
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        labels = inputs.get("labels")
+        outputs = model(**inputs)
+
+        if labels is None:
+            loss = outputs["loss"] if isinstance(outputs, dict) else outputs.loss
+        else:
+            logits = outputs["logits"] if isinstance(outputs, dict) else outputs.logits
+            loss = focal_loss_for_token_classification(
+                logits,
+                labels,
+                gamma=self.focal_gamma,
+                alpha=self.focal_alpha,
+                ignore_index=self.ignore_index,
+                o_label_id=self.o_label_id,
+            )
+
+        return (loss, outputs) if return_outputs else loss
 
 
 class ExperimentRunner:
@@ -1019,7 +1117,17 @@ class ExperimentRunner:
         elif "tokenizer" in trainer_params:
             trainer_kwargs["tokenizer"] = tokenizer
 
-        trainer = Trainer(**trainer_kwargs)
+        if self.cfg.loss_function == "focal":
+            trainer = FocalLossTrainer(
+                **trainer_kwargs,
+                focal_gamma=self.cfg.focal_gamma,
+                focal_alpha=self.cfg.focal_alpha,
+                ignore_index=self.cfg.ignore_label,
+                o_label_id=self.state.label2id.get("O"),
+            )
+        else:
+            trainer = Trainer(**trainer_kwargs)
+
         return self.remove_notebook_progress_callbacks(trainer)
 
     def remove_notebook_progress_callbacks(self, trainer: Trainer) -> Trainer:
@@ -1116,6 +1224,9 @@ class ExperimentRunner:
             "word_window_stride": self.cfg.word_window_stride,
             "max_length": self.cfg.max_length,
             "num_train_epochs": self.cfg.num_train_epochs,
+            "loss_function": self.cfg.loss_function,
+            "focal_gamma": self.cfg.focal_gamma,
+            "focal_alpha": self.cfg.focal_alpha,
             "learning_rate": self.cfg.learning_rate,
             "optimizer": self.cfg.optimizer_name,
             "weight_decay": self.cfg.weight_decay,
@@ -1575,6 +1686,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--grad-accum", type=int, default=None)
     parser.add_argument("--lr-scheduler-type", type=str, default=None)
     parser.add_argument("--max-grad-norm", type=float, default=None)
+    parser.add_argument("--loss-function", choices=["cross_entropy", "focal"], default=None)
+    parser.add_argument("--focal-gamma", type=float, default=None)
+    parser.add_argument(
+        "--focal-alpha",
+        type=float,
+        default=None,
+        help="Optional focal alpha. If set, non-O labels receive alpha and O receives 1-alpha. Use >0.5 to upweight entity tokens.",
+    )
     parser.add_argument("--gradient-checkpointing", type=str2bool, nargs="?", const=True, default=None)
 
     parser.add_argument("--best-model-metric", type=str, default=None)
@@ -1627,6 +1746,9 @@ def build_config_from_args(args: argparse.Namespace) -> ExperimentConfig:
     apply_if_not_none(kwargs, "gradient_accumulation_steps", args.grad_accum)
     apply_if_not_none(kwargs, "lr_scheduler_type", args.lr_scheduler_type)
     apply_if_not_none(kwargs, "max_grad_norm", args.max_grad_norm)
+    apply_if_not_none(kwargs, "loss_function", args.loss_function)
+    apply_if_not_none(kwargs, "focal_gamma", args.focal_gamma)
+    apply_if_not_none(kwargs, "focal_alpha", args.focal_alpha)
     apply_if_not_none(kwargs, "gradient_checkpointing", args.gradient_checkpointing)
     apply_if_not_none(kwargs, "best_model_metric", args.best_model_metric)
     apply_if_not_none(kwargs, "early_stopping_patience", args.early_stopping_patience)
@@ -1704,6 +1826,9 @@ def apply_generic_overrides(config: ExperimentConfig, overrides: list[str]) -> N
         "GRADIENT_ACCUMULATION_STEPS": "gradient_accumulation_steps",
         "LR_SCHEDULER_TYPE": "lr_scheduler_type",
         "MAX_GRAD_NORM": "max_grad_norm",
+        "LOSS_FUNCTION": "loss_function",
+        "FOCAL_GAMMA": "focal_gamma",
+        "FOCAL_ALPHA": "focal_alpha",
         "BEST_MODEL_METRIC": "best_model_metric",
         "EARLY_STOPPING_PATIENCE": "early_stopping_patience",
         "MIXED_PRECISION": "mixed_precision",
