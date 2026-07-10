@@ -4,7 +4,7 @@ This project evaluates different serialization strategies for token classificati
 
 ## Overview
 
-The main experiment runner (`execute_experiments_main_stratified_cv.py`) evaluates each serialization method on each dataset using cross-validation with transformer models. The framework supports:
+The main experiment runner (`execute_experiment_with_parameters.py`) evaluates each serialization method on each dataset using cross-validation with transformer models. The framework supports:
 
 - **Multiple serialization strategies** for converting structured document OCR data into token sequences
 - **Cross-validation evaluation** with train/validation/test splits
@@ -16,8 +16,13 @@ The main experiment runner (`execute_experiments_main_stratified_cv.py`) evaluat
 
 ```
 serialization-strategies/
-├── execute_experiments_main_stratified_cv.py  # Main experiment runner (root)
-├── run_eval.sh                                 # Evaluation script
+├── execute_experiment_with_parameters.py          # Main experiment runner
+├── run_eval.sh                                    # Evaluation script
+├── dataset_serialization_RealKIE.ipynb           # RealKIE dataset notebook
+├── dataset_serialization_VRDU.ipynb              # VRDU dataset notebook
+├── dataset_serialization_multitype.ipynb         # Multi-type dataset notebook
+├── LICENSE                                        # Project license
+├── pyproject.toml                                # Project dependencies
 ├── src/
 │   ├── datasets/                  # Dataset loaders
 │   │   ├── base_loader.py        # Base dataset loader class
@@ -46,18 +51,12 @@ serialization-strategies/
 │       ├── lmdx_coord_suffix.py  # LayoutMDX coordinate suffix
 │       ├── compact_bbox_token.py # Compact bbox token
 │       └── t5_json.py            # T5 JSON serialization
-├── data/                         # Data directory
-│   └── processed/               # Processed datasets
-├── runs/                         # Model training runs
-├── results_*/                    # Experiment results (per dataset)
-├── mlflow.db                     # MLflow tracking database
-├── mlartifacts/                  # MLflow artifacts
-└── pyproject.toml               # Project dependencies
+└── .gitignore                    # Git ignore rules
 ```
 
 ## Main Components
 
-### Experiment Runner (`execute_experiments_main_stratified_cv.py`)
+### Experiment Runner (`execute_experiment_with_parameters.py`)
 
 The experiment runner orchestrates the evaluation of serialization strategies:
 
@@ -67,7 +66,7 @@ The experiment runner orchestrates the evaluation of serialization strategies:
 - **Evaluation**: Computes comprehensive metrics including accuracy, F1 scores, and per-label reports
 - **MLflow logging**: Tracks all experiments, parameters, and results
 
-Key configuration options (at the top of `execute_experiments_main_stratified_cv.py`):
+Key configuration options (at the top of `execute_experiment_with_parameters.py`):
 
 ```python
 # Dataset and strategy selection
@@ -161,7 +160,7 @@ pip install -r requirements.txt  # if available
 
 1. **Prepare datasets**: Ensure processed datasets are in `data/processed/<dataset_name>/<strategy>/all.jsonl`
 
-2. **Configure experiment**: Edit `execute_experiments_main_stratified_cv.py` to set:
+2. **Configure experiment**: Edit `execute_experiment_with_parameters.py` to set:
    - `datasets_to_run`: Which datasets to evaluate
    - `strategies_to_run`: Which serialization strategies to test
    - `model_registry`: Which models to use
@@ -170,7 +169,7 @@ pip install -r requirements.txt  # if available
 3. **Run experiments**:
 
 ```bash
-python execute_experiments_main_stratified_cv.py
+python execute_experiment_with_parameters.py
 ```
 
 ### Command Line Arguments
@@ -178,7 +177,7 @@ python execute_experiments_main_stratified_cv.py
 The experiment runner supports command-line arguments:
 
 ```bash
-python execute_experiments_main_stratified_cv.py --datasets <dataset_names> --strategies <strategy_names> --models <model_names> --dry-run
+python execute_experiment_with_parameters.py --datasets <dataset_names> --strategies <strategy_names> --models <model_names> --dry-run
 ```
 
 - `--datasets`: Comma-separated list of dataset names (e.g., "charity_reports,fcc_invoices")
@@ -206,10 +205,6 @@ The experiment runner generates:
   - `chunk_summary.csv`: Summary of chunked documents
   - `dataset_read_summary.csv`: Dataset loading statistics
   - `label_map.csv`: Label mapping information
-
-- **Model checkpoints** in `runs/`:
-  - Best model checkpoints for each fold
-  - Tokenizers and model configurations
 
 - **MLflow tracking**:
   - All parameters, metrics, and artifacts logged to MLflow
@@ -270,7 +265,7 @@ The framework computes comprehensive metrics:
 
 ### Training Configuration
 
-Key training parameters in `execute_experiments_main_stratified_cv.py`:
+Key training parameters in `execute_experiment_with_parameters.py`:
 
 - `num_train_epochs`: Number of training epochs
 - `learning_rate`: Learning rate for optimizer
@@ -322,7 +317,7 @@ class MySerializer(BaseSerializer):
 
 ### Adding a New Model
 
-Add to `model_registry` in `execute_experiments_main_stratified_cv.py`:
+Add to `model_registry` in `execute_experiment_with_parameters.py`:
 
 ```python
 model_registry = [
