@@ -4,7 +4,7 @@ This project evaluates different serialization strategies for token classificati
 
 ## Overview
 
-The main experiment runner (`src/training/execute_experiment_new.py`) evaluates each serialization method on each dataset using cross-validation with transformer models. The framework supports:
+The main experiment runner (`run_eval.sh`) evaluates each serialization method on each dataset using cross-validation with transformer models. The framework supports:
 
 - **Multiple serialization strategies** for converting structured document OCR data into token sequences
 - **Cross-validation evaluation** with train/validation/test splits
@@ -60,9 +60,9 @@ serialization-strategies/
 
 ## Main Components
 
-### Experiment Runner (`src/training/execute_experiment_new.py`)
+### Experiment Runner (`run_eval.sh`)
 
-The experiment runner orchestrates the evaluation of serialization strategies:
+The main entry point is `run_eval.sh`, which runs experiments across multiple datasets and strategies. It calls the underlying Python implementation in `src/training/execute_experiment_new.py` which orchestrates the evaluation:
 
 - **Dataset discovery**: Automatically discovers processed datasets from `data/processed/`
 - **Cross-validation**: Performs N-fold cross-validation with stratified splits
@@ -164,13 +164,15 @@ pip install -r requirements.txt  # if available
 
 1. **Prepare datasets**: Ensure processed datasets are in `data/processed/<dataset_name>/<strategy>/all.jsonl`
 
-2. **Configure experiment**: Use command-line arguments or modify `src/training/experiment_config.py`:
-   - `--datasets`: Which datasets to evaluate
-   - `--strategies`: Which serialization strategies to test
-   - `--models`: Which models to use
-   - Training hyperparameters
+2. **Run experiments**:
 
-3. **Run experiments**:
+```bash
+bash run_eval.sh
+```
+
+The `run_eval.sh` script contains pre-configured commands for running experiments on all datasets with multiple models and strategies.
+
+3. **Custom runs**: For custom experiments, you can directly call the Python script:
 
 ```bash
 python src/training/execute_experiment_new.py --datasets <dataset_names> --strategies <strategy_names> --models <model_names>
