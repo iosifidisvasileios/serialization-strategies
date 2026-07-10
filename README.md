@@ -106,7 +106,7 @@ datasets_to_run = "all"  # or specific dataset names
 strategies_to_run = ["column_aware"]  # or "all"
 
 # Cross-validation settings
-n_folds = 5
+n_folds = 10
 split_seed = 42
 validation_fraction_of_train = 0.10
 

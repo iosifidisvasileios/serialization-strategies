@@ -27,7 +27,7 @@ class ExperimentConfig:
     runs_root: Optional[Path] = None
     results_root: Optional[Path] = None
     split_seed: int = 42
-    n_folds: int = 5
+    n_folds: int = 10
     validation_fraction_of_train: float = 0.1
     sampling: Optional[int] = None
     datasets_to_run: str | list[str] = "all"
