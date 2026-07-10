@@ -12,8 +12,36 @@ The main experiment runner (`run_eval.sh`) evaluates each serialization method o
 - **Multiple document datasets** including charity reports, FCC invoices, NDAs, ad buy forms, multi-documents, and registration forms
 - **Configurable transformer models** from HuggingFace
 
+## Data Sources
+
+This project uses document understanding datasets that must be manually downloaded and processed before running experiments:
+
+### VRDU Dataset
+- **Source**: https://github.com/google-research-datasets/vrdu/tree/main
+- **Processing notebook**: `dataset_serialization_VRDU.ipynb`
+- Run the notebook after downloading the raw VRDU data to generate the processed dataset files.
+
+### RealKIE Dataset
+- **Source**: https://github.com/IndicoDataSolutions/RealKIE
+- **Processing notebook**: `dataset_serialization_RealKIE.ipynb`
+- Run the notebook after downloading the raw RealKIE data to generate the processed dataset files.
+
+### Multi-type Documents Dataset
+- **Source**: https://www.kaggle.com/datasets/senju14/ocr-dataset-of-multi-type-documents
+- **Processing notebook**: `dataset_serialization_multitype.ipynb`
+- Run the notebook after downloading the raw multi-type documents data from Kaggle to generate the processed dataset files.
+
+### Data Processing Workflow
+
+1. **Download raw data**: Manually download the datasets from their respective sources above
+2. **Run processing notebooks**: Execute the corresponding notebook for each dataset:
+   - `dataset_serialization_VRDU.ipynb`
+   - `dataset_serialization_RealKIE.ipynb`
+   - `dataset_serialization_multitype.ipynb`
+3. **Processed data location**: The notebooks will generate processed data in `data/processed/<dataset_name>/<strategy>/all.jsonl` format required by the experiment runner
+
 ## Project Structure
- 
+  
 ```
 serialization-strategies/
 ├── run_eval.sh                                    # Evaluation script
