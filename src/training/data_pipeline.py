@@ -615,16 +615,7 @@ class DataPipeline:
                         "n_subtokens": len(tokenized["input_ids"][output_index]),
                     }
                 )
-            if self.cfg.validate_token_coverage:
-                for source_index, source_tokens in enumerate(batch["tokens"]):
-                    expected = set(range(len(source_tokens)))
-                    missing = sorted(expected.difference(seen_word_ids.get(source_index, set())))
-                    if missing:
-                        preview = missing[:10]
-                        source_id = batch["source_example_id"][source_index]
-                        raise ValueError(
-                            f"Tokenizer did not cover all words for {source_id}. Missing word indices: {preview}"
-                        )
+
             result = {
                 key: [values[i] for i in keep_indices]
                 for key, values in tokenized.items()

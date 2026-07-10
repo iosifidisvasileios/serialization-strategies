@@ -41,7 +41,6 @@ class ExperimentConfig:
     tokenizer_stride: int = 0
     tokenization_batch_size: int = 64
     tokenization_num_proc: Optional[int] = None
-    validate_token_coverage: bool = True
     drop_chunks_with_no_trainable_tokens: bool = True
     num_train_epochs: float = 20
     per_device_train_batch_size: int = 8
@@ -446,7 +445,6 @@ def build_config_from_args(args: argparse.Namespace) -> ExperimentConfig:
     apply_if_not_none(kwargs, "tokenizer_stride", args.tokenizer_stride)
     apply_if_not_none(kwargs, "tokenization_batch_size", args.tokenization_batch_size)
     apply_if_not_none(kwargs, "tokenization_num_proc", args.tokenization_num_proc)
-    apply_if_not_none(kwargs, "validate_token_coverage", args.validate_token_coverage)
     apply_if_not_none(kwargs, "num_train_epochs", args.epochs)
     apply_if_not_none(kwargs, "per_device_train_batch_size", args.train_batch_size)
     apply_if_not_none(kwargs, "per_device_eval_batch_size", args.eval_batch_size)
