@@ -4,7 +4,7 @@ This project evaluates different serialization strategies for token classificati
 
 ## Overview
 
-The main experiment runner (`execute_experiment_with_parameters.py`) evaluates each serialization method on each dataset using cross-validation with transformer models. The framework supports:
+The main experiment runner (`src/training/execute_experiment_new.py`) evaluates each serialization method on each dataset using cross-validation with transformer models. The framework supports:
 
 - **Multiple serialization strategies** for converting structured document OCR data into token sequences
 - **Cross-validation evaluation** with train/validation/test splits
@@ -16,7 +16,6 @@ The main experiment runner (`execute_experiment_with_parameters.py`) evaluates e
 
 ```
 serialization-strategies/
-├── execute_experiment_with_parameters.py          # Main experiment runner
 ├── run_eval.sh                                    # Evaluation script
 ├── dataset_serialization_RealKIE.ipynb           # RealKIE dataset notebook
 ├── dataset_serialization_VRDU.ipynb              # VRDU dataset notebook
@@ -38,25 +37,30 @@ serialization-strategies/
 │   │   ├── quality.py            # Data quality checks
 │   │   ├── schema.py             # Data schemas
 │   │   └── value_normalization.py
-│   └── serialization/            # Serialization strategies
-│       ├── base.py               # Base serializer class
-│       ├── plain_text.py         # Plain text serialization
-│       ├── page_aware.py         # Page-aware serialization
-│       ├── block_aware.py        # Block-aware serialization
-│       ├── line_aware.py         # Line-aware serialization
-│       ├── column_aware.py       # Column-aware serialization
-│       ├── bbox_token.py         # Bounding box token serialization
-│       ├── xycut_aware.py        # XYCut-aware serialization
-│       ├── rowcol_bucket.py      # Row/column bucket serialization
-│       ├── lmdx_coord_suffix.py  # LayoutMDX coordinate suffix
-│       ├── compact_bbox_token.py # Compact bbox token
-│       └── t5_json.py            # T5 JSON serialization
+│   ├── serialization/            # Serialization strategies
+│   │   ├── base.py               # Base serializer class
+│   │   ├── plain_text.py         # Plain text serialization
+│   │   ├── page_aware.py         # Page-aware serialization
+│   │   ├── block_aware.py        # Block-aware serialization
+│   │   ├── line_aware.py         # Line-aware serialization
+│   │   ├── column_aware.py       # Column-aware serialization
+│   │   ├── bbox_token.py         # Bounding box token serialization
+│   │   ├── xycut_aware.py        # XYCut-aware serialization
+│   │   ├── rowcol_bucket.py      # Row/column bucket serialization
+│   │   ├── lmdx_coord_suffix.py  # LayoutMDX coordinate suffix
+│   │   ├── compact_bbox_token.py # Compact bbox token
+│   │   └── t5_json.py            # T5 JSON serialization
+│   └── training/                  # Training and experiment orchestration
+│       ├── execute_experiment_new.py  # Main experiment runner
+│       ├── experiment_config.py       # Configuration management
+│       ├── training_engine.py         # Training engine with MLflow integration
+│       └── data_pipeline.py           # Data loading and preprocessing pipeline
 └── .gitignore                    # Git ignore rules
 ```
 
 ## Main Components
 
-### Experiment Runner (`execute_experiment_with_parameters.py`)
+### Experiment Runner (`src/training/execute_experiment_new.py`)
 
 The experiment runner orchestrates the evaluation of serialization strategies:
 
@@ -66,7 +70,7 @@ The experiment runner orchestrates the evaluation of serialization strategies:
 - **Evaluation**: Computes comprehensive metrics including accuracy, F1 scores, and per-label reports
 - **MLflow logging**: Tracks all experiments, parameters, and results
 
-Key configuration options (at the top of `execute_experiment_with_parameters.py`):
+Key configuration options (via command-line arguments or `ExperimentConfig`):
 
 ```python
 # Dataset and strategy selection
@@ -160,16 +164,16 @@ pip install -r requirements.txt  # if available
 
 1. **Prepare datasets**: Ensure processed datasets are in `data/processed/<dataset_name>/<strategy>/all.jsonl`
 
-2. **Configure experiment**: Edit `execute_experiment_with_parameters.py` to set:
-   - `datasets_to_run`: Which datasets to evaluate
-   - `strategies_to_run`: Which serialization strategies to test
-   - `model_registry`: Which models to use
+2. **Configure experiment**: Use command-line arguments or modify `src/training/experiment_config.py`:
+   - `--datasets`: Which datasets to evaluate
+   - `--strategies`: Which serialization strategies to test
+   - `--models`: Which models to use
    - Training hyperparameters
 
 3. **Run experiments**:
 
 ```bash
-python execute_experiment_with_parameters.py
+python src/training/execute_experiment_new.py --datasets <dataset_names> --strategies <strategy_names> --models <model_names>
 ```
 
 ### Command Line Arguments
@@ -177,13 +181,24 @@ python execute_experiment_with_parameters.py
 The experiment runner supports command-line arguments:
 
 ```bash
-python execute_experiment_with_parameters.py --datasets <dataset_names> --strategies <strategy_names> --models <model_names> --dry-run
+python src/training/execute_experiment_new.py --datasets <dataset_names> --strategies <strategy_names> --models <model_names> [additional options]
 ```
 
+Common options:
 - `--datasets`: Comma-separated list of dataset names (e.g., "charity_reports,fcc_invoices")
-- `--strategies`: Comma-separated list of strategy names (e.g., "column_aware,plain_text") or "all"
+- `--strategies`: Comma-separated list of strategy names (e.g., "column_aware,plain_text")
 - `--models`: Comma-separated list of model names (e.g., "bert-mlsm,deberta_v3_small")
-- `--dry-run`: Perform a dry run without training
+- `--max-length`: Maximum sequence length (default: 512)
+- `--train-batch-size`: Training batch size (default: 32)
+- `--eval-batch-size`: Evaluation batch size (default: 8)
+- `--learning-rate`: Learning rate (default: 5e-5)
+- `--num-train-epochs`: Number of training epochs (default: 20)
+- `--loss-function`: Loss function type (e.g., "focal")
+- `--focal-gamma`: Focal loss gamma parameter
+- `--focal-alpha`: Focal loss alpha parameter
+- `--mixed-precision`: Precision mode (auto, fp16, bf16, fp32)
+- `--gradient-checkpointing`: Enable gradient checkpointing
+- `--grad-accum`: Gradient accumulation steps
 
 ### Batch Evaluation
 
@@ -265,7 +280,7 @@ The framework computes comprehensive metrics:
 
 ### Training Configuration
 
-Key training parameters in `execute_experiment_with_parameters.py`:
+Key training parameters in `src/training/experiment_config.py` or via command-line:
 
 - `num_train_epochs`: Number of training epochs
 - `learning_rate`: Learning rate for optimizer
@@ -317,7 +332,7 @@ class MySerializer(BaseSerializer):
 
 ### Adding a New Model
 
-Add to `model_registry` in `execute_experiment_with_parameters.py`:
+Add to `model_registry` in `src/training/experiment_config.py` or via command-line:
 
 ```python
 model_registry = [
