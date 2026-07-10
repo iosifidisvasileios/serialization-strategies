@@ -13,7 +13,7 @@ The main experiment runner (`run_eval.sh`) evaluates each serialization method o
 - **Configurable transformer models** from HuggingFace
 
 ## Project Structure
-
+ 
 ```
 serialization-strategies/
 ├── run_eval.sh                                    # Evaluation script
