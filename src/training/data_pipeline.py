@@ -524,7 +524,13 @@ class DataPipeline:
         normalized_tokens = []
         for token, source, role in zip(tokens, sources, roles):
             if source is None or role != "ocr_token":
-                normalized_tokens.append(canonical_layout_token(role))
+                role_token = canonical_layout_token(role)
+                value_token = str(token).strip()
+                normalized_tokens.append(
+                    role_token
+                    if not value_token or value_token == role_token
+                    else f"{role_token} {value_token}"
+                )
             else:
                 text = str(token)
                 normalized_tokens.append(text if text.strip() else "<EMPTY_OCR>")

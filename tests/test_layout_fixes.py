@@ -105,6 +105,21 @@ class LayoutFixTests(unittest.TestCase):
         self.assertEqual(canonical_layout_token("unseen_role"), "[LAYOUT_UNKNOWN]")
         self.assertLess(len(ALL_LAYOUT_TOKENS), 32)
 
+    def test_atomic_marker_preserves_original_value(self):
+        pipeline = DataPipeline(
+            ExperimentConfig(project_root=ROOT, n_folds=2, enforce_minimum_versions=False)
+        )
+        view = pipeline._training_record_view(
+            {
+                "tokens": ["[R_12]", "Invoice"],
+                "labels": [-100, "O"],
+                "source_token_indices": [None, 0],
+                "layout_roles": ["row_bucket", "ocr_token"],
+                "original_token_labels": ["O"],
+            }
+        )
+        self.assertEqual(view["tokens"], ["[LAYOUT_ROW] [R_12]", "Invoice"])
+
     def test_shared_windows_equalize_plain_and_heavy_strategies(self):
         cfg = ExperimentConfig(
             project_root=ROOT,
