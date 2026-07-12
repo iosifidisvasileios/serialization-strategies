@@ -763,8 +763,8 @@ class DataPipeline:
             for strategy in strategies:
                 record_index, record = slot_maps[strategy][(doc_key, occurrence)]
                 view = self._training_record_view(record)
-                source_views = self._record_source_views(view)
-                source_set = {item["source"] for item in source_views}
+                source_views = self._source_view_lookup(self._record_source_views(view))
+                source_set = set(source_views)
                 source_sets.append(source_set)
                 if reference_labels is None:
                     reference_labels = view["canonical_labels"]

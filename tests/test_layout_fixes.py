@@ -162,6 +162,15 @@ class LayoutFixTests(unittest.TestCase):
             [(row["word_start"], row["word_end"]) for row in examples["rowcol_bucket"]],
         )
 
+    def test_source_window_lookup_handles_reordered_tokens(self):
+        views = [
+            {"source": 2, "active": {}, "prefix": [], "real": 0, "suffix": []},
+            {"source": 0, "active": {}, "prefix": [], "real": 1, "suffix": []},
+            {"source": 1, "active": {}, "prefix": [], "real": 2, "suffix": []},
+        ]
+        lookup = DataPipeline._source_view_lookup(views)
+        self.assertEqual(DataPipeline._render_source_window(lookup, {0}), [1])
+
     def test_ocr_aggregation_deduplicates_and_rejoins_entities(self):
         columns = {
             "metric_source_indices": [[0, -1, -1], [1, -1, -1], [0, -1, -1]],
