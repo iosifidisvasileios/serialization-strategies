@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 import warnings
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import asdict, dataclass, field
@@ -23,15 +24,36 @@ from sklearn.metrics import accuracy_score, classification_report, precision_rec
 from transformers import (
     AutoConfig,
     AutoModelForTokenClassification,
-    DataCollatorForTokenClassification,
     Trainer,
     TrainerCallback,
     TrainingArguments,
     set_seed,
 )
 from transformers.utils import logging as transformers_logging
-from data_pipeline import DataPipeline, ExperimentData, TokenizedCorpus
-from experiment_config import ExperimentConfig, ModelSpec
+
+# Add parent directories to path for direct script execution
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(ROOT / "src"))
+if str(ROOT / "src" / "training") not in sys.path:
+    sys.path.insert(0, str(ROOT / "src" / "training"))
+
+try:
+    from .data_pipeline import DataPipeline, ExperimentData, TokenizedCorpus
+    from .experiment_config import ExperimentConfig, ModelSpec
+    from .layout_model import (
+        DataCollatorForTokenClassificationWithLayout,
+        NumericLayoutTokenClassifier,
+    )
+    from .ocr_metrics import aggregate_ocr_predictions, entity_metrics
+except ImportError:
+    from data_pipeline import DataPipeline, ExperimentData, TokenizedCorpus
+    from experiment_config import ExperimentConfig, ModelSpec
+    from layout_model import (
+        DataCollatorForTokenClassificationWithLayout,
+        NumericLayoutTokenClassifier,
+    )
+    from ocr_metrics import aggregate_ocr_predictions, entity_metrics
 
 try:
     from datasets import disable_progress_bar as disable_datasets_progress_bar
@@ -246,6 +268,7 @@ class ExperimentRunner:
         self.pipeline = DataPipeline(config)
         self.state = TrainingState()
         self.runtime_info: dict[str, Any] = {}
+        self._active_metric_dataset: Optional[Dataset] = None
 
     @property
     def data(self) -> ExperimentData:
@@ -379,6 +402,14 @@ class ExperimentRunner:
         return experiment_id
 
     def flatten_predictions_and_labels(self, logits_or_predictions, labels):
+        aggregated = aggregate_ocr_predictions(
+            logits_or_predictions,
+            self._active_metric_dataset,
+            id2label=self.data.id2label,
+            label2id=self.data.label2id,
+        )
+        if aggregated is not None:
+            return (aggregated.y_true, aggregated.y_pred)
         if logits_or_predictions.ndim == 3:
             predictions = np.argmax(logits_or_predictions, axis=-1)
         else:
@@ -402,7 +433,28 @@ class ExperimentRunner:
 
     def compute_metrics(self, eval_pred):
         logits, labels = eval_pred
-        y_true, y_pred = self.flatten_predictions_and_labels(logits, labels)
+        aggregated = aggregate_ocr_predictions(
+            logits,
+            self._active_metric_dataset,
+            id2label=self.data.id2label,
+            label2id=self.data.label2id,
+        )
+        if aggregated is None:
+            y_true, y_pred = self.flatten_predictions_and_labels(logits, labels)
+            entity_values = {
+                "entity_micro_precision": 0.0,
+                "entity_micro_recall": 0.0,
+                "entity_micro_f1": 0.0,
+                "entity_macro_f1": 0.0,
+                "n_gold_entities": 0,
+                "n_pred_entities": 0,
+                "n_correct_entities": 0,
+            }
+            n_missing_ocr_tokens = 0
+        else:
+            y_true, y_pred = aggregated.y_true, aggregated.y_pred
+            entity_values = entity_metrics(aggregated.sequences)
+            n_missing_ocr_tokens = aggregated.n_missing_ocr_tokens
         if len(y_true) == 0:
             return {
                 "accuracy": 0.0,
@@ -410,6 +462,9 @@ class ExperimentRunner:
                 "weighted_f1": 0.0,
                 "non_o_micro_f1": 0.0,
                 "n_eval_tokens": 0,
+                "n_eval_ocr_tokens": 0,
+                "n_missing_ocr_tokens": int(n_missing_ocr_tokens),
+                **entity_values,
             }
         accuracy = accuracy_score(y_true, y_pred)
         macro_p, macro_r, macro_f1, _ = precision_recall_fscore_support(
@@ -436,6 +491,9 @@ class ExperimentRunner:
             "non_o_micro_recall": float(non_o_r),
             "non_o_micro_f1": float(non_o_f1),
             "n_eval_tokens": int(len(y_true)),
+            "n_eval_ocr_tokens": int(len(y_true)),
+            "n_missing_ocr_tokens": int(n_missing_ocr_tokens),
+            **entity_values,
         }
 
     def per_label_report_dataframe(self, pred_output) -> pd.DataFrame:
@@ -513,7 +571,7 @@ class ExperimentRunner:
                 counts[key] = counts.get(key, 0) + parameter.numel()
         return counts
 
-    def build_model(self, model_spec: ModelSpec):
+    def build_model(self, model_spec: ModelSpec, tokenizer):
         common_kwargs = {
             "num_labels": len(self.data.label_list),
             "id2label": self.data.id2label,
@@ -530,6 +588,8 @@ class ExperimentRunner:
             else:
                 config = AutoConfig.from_pretrained(model_spec.model_name_or_path, **common_kwargs)
                 model = AutoModelForTokenClassification.from_config(config)
+        model.resize_token_embeddings(len(tokenizer))
+        model = NumericLayoutTokenClassifier(model)
         if self.cfg.gradient_checkpointing and hasattr(model, "gradient_checkpointing_enable"):
             model.gradient_checkpointing_enable()
         self.force_trainable_parameters_fp32(model)
@@ -612,6 +672,7 @@ class ExperimentRunner:
     def build_trainer(
         self, model, training_args, datasets: dict[str, Dataset], tokenizer, data_collator
     ):
+        self._active_metric_dataset = datasets["validation"]
         trainer_kwargs = {
             "model": model,
             "args": training_args,
@@ -969,7 +1030,7 @@ class ExperimentRunner:
         tokenized_corpus = self.pipeline.tokenize_dataset_strategy_once(
             dataset_name=dataset_name, strategy=strategy, model_spec=model_spec, tokenizer=tokenizer
         )
-        data_collator = DataCollatorForTokenClassification(
+        data_collator = DataCollatorForTokenClassificationWithLayout(
             tokenizer=tokenizer, pad_to_multiple_of=8 if torch.cuda.is_available() else None
         )
         model_run_rows: list[dict[str, Any]] = []
@@ -1057,7 +1118,7 @@ class ExperimentRunner:
             fold_index=fold_index,
             corpus=tokenized_corpus,
         )
-        model = self.build_model(model_spec)
+        model = self.build_model(model_spec, tokenizer)
         total_parameters = self.count_total_parameters(model)
         trainable_parameters = self.count_trainable_parameters(model)
         trainable_ratio = trainable_parameters / total_parameters if total_parameters else 0.0
@@ -1147,6 +1208,7 @@ class ExperimentRunner:
         return (train_result, gpu_metrics)
 
     def _evaluate_validation(self, trainer: Trainer, validation_dataset: Dataset):
+        self._active_metric_dataset = validation_dataset
         self.reset_cuda_peak_memory()
         metrics = self.run_trainer_quietly(
             trainer.evaluate, eval_dataset=validation_dataset, metric_key_prefix="val"
@@ -1154,6 +1216,7 @@ class ExperimentRunner:
         return (metrics, self.cuda_memory_metrics("validation"))
 
     def _evaluate_test(self, trainer: Trainer, test_dataset: Dataset):
+        self._active_metric_dataset = test_dataset
         self.reset_cuda_peak_memory()
         output = self.run_trainer_quietly(
             trainer.predict, test_dataset=test_dataset, metric_key_prefix="test"

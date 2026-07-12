@@ -200,18 +200,30 @@ bash run_eval.sh
 
 The `run_eval.sh` script contains pre-configured commands for running experiments on all datasets with multiple models and strategies.
 
-3. **Custom runs**: For custom experiments, you can directly call the Python script:
+3. **Custom runs**: For custom experiments, you can run the experiment runner in two ways:
 
+**Option 1: Direct script execution**
 ```bash
 python src/training/execute_experiment_new.py --datasets <dataset_names> --strategies <strategy_names> --models <model_names>
 ```
 
+**Option 2: As a Python module (recommended)**
+```bash
+python -m src.training.execute_experiment_new --datasets <dataset_names> --strategies <strategy_names> --models <model_names>
+```
+
+Both methods work identically. The module execution is the more standard Python approach and is recommended for production use.
+
 ### Command Line Arguments
 
-The experiment runner supports command-line arguments:
+The experiment runner supports command-line arguments. You can use either execution method:
 
 ```bash
+# Direct script execution
 python src/training/execute_experiment_new.py --datasets <dataset_names> --strategies <strategy_names> --models <model_names> [additional options]
+
+# Or as a Python module (recommended)
+python -m src.training.execute_experiment_new --datasets <dataset_names> --strategies <strategy_names> --models <model_names> [additional options]
 ```
 
 Common options:
@@ -356,9 +368,9 @@ class MySerializer(BaseSerializer):
 
 ### Adding a New Dataset
 
-1. Create a new loader in `src/datasets/`
+1. Create a new loader in `src/dataset_loaders/`
 2. Extend `BaseDatasetLoader`
-3. Add import to `src/datasets/__init__.py`
+3. Add import to `src/dataset_loaders/__init__.py`
 
 ### Adding a New Model
 

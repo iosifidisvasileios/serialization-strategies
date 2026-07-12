@@ -2,6 +2,7 @@ from .base import (
     IGNORE_LABEL,
     BaseSerializer,
     SerializedItem,
+    rebuild_bio_labels_for_serialized_order,
     collapse_serialized_labels_to_original,
     iter_real_serialized_positions,
 )
@@ -52,6 +53,7 @@ __all__ = [
     "IGNORE_LABEL",
     "BaseSerializer",
     "SerializedItem",
+    "rebuild_bio_labels_for_serialized_order",
     "PlainTextSerializer",
     "PageAwareSerializer",
     "BlockAwareSerializer",

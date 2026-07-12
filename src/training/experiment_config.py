@@ -107,7 +107,7 @@ class ExperimentConfig:
             raise ValueError(f"max_length must be > 0, got {self.max_length}.")
         if self.word_window_size < 0:
             raise ValueError(
-                "word_window_size must be >= 0. Use 0 to tokenize each full record before tokenizer-level overflow chunking."
+                "word_window_size must be >= 0. Use 0 for automatic shared source-token windows."
             )
         if self.word_window_stride < 0:
             raise ValueError(f"word_window_stride must be >= 0, got {self.word_window_stride}.")

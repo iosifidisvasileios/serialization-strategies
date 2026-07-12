@@ -2,6 +2,8 @@ from __future__ import annotations
 import json
 import os
 import random
+import sys
+import warnings
 from collections import Counter, defaultdict
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
@@ -12,7 +14,30 @@ import pandas as pd
 from datasets import Dataset
 from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
 from transformers import AutoTokenizer
-from experiment_config import ExperimentConfig, ModelSpec
+
+# Add parent directories to path for direct script execution
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(ROOT / "src"))
+if str(ROOT / "src" / "training") not in sys.path:
+    sys.path.insert(0, str(ROOT / "src" / "training"))
+
+try:
+    from .experiment_config import ExperimentConfig, ModelSpec
+    from .layout_model import ALL_LAYOUT_TOKENS, canonical_layout_token
+    from .ocr_metrics import (
+        canonical_labels_from_record,
+        rebuild_bio_for_source_order,
+        repair_bio_label_ids,
+    )
+except ImportError:
+    from experiment_config import ExperimentConfig, ModelSpec
+    from layout_model import ALL_LAYOUT_TOKENS, canonical_layout_token
+    from ocr_metrics import (
+        canonical_labels_from_record,
+        rebuild_bio_for_source_order,
+        repair_bio_label_ids,
+    )
 
 
 @dataclass
@@ -32,6 +57,9 @@ class ExperimentData:
     cv_assignment_dfs: dict[str, pd.DataFrame] = field(default_factory=dict)
     split_plan_paths: dict[str, Path] = field(default_factory=dict)
     examples_by_dataset_strategy: dict[str, dict[str, list[dict]]] = field(default_factory=dict)
+    fair_window_plan_cache: dict[tuple[Any, ...], list[dict[str, Any]]] = field(
+        default_factory=dict
+    )
     tokenization_summary_rows: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -137,15 +165,50 @@ class DataPipeline:
             if not selected_strategy_files:
                 print(f"Skipping dataset {dataset_name!r}; no selected strategies found.")
                 continue
+
+            records_by_strategy = {
+                strategy: self.read_jsonl(path)
+                for strategy, path in selected_strategy_files.items()
+            }
+            doc_keys_by_strategy = {
+                strategy: {
+                    self.record_doc_key(record, "record", record_index)
+                    for record_index, record in enumerate(records)
+                }
+                for strategy, records in records_by_strategy.items()
+            }
+            common_doc_keys = set.intersection(*doc_keys_by_strategy.values())
+            if not common_doc_keys:
+                raise AssertionError(
+                    f"Selected strategies for dataset {dataset_name!r} have no common documents."
+                )
+            if any(keys != common_doc_keys for keys in doc_keys_by_strategy.values()):
+                dropped = {
+                    strategy: len(keys - common_doc_keys)
+                    for strategy, keys in doc_keys_by_strategy.items()
+                }
+                warnings.warn(
+                    f"Restricting dataset {dataset_name!r} to the common strategy cohort; "
+                    f"strategy-only document counts: {dropped}.",
+                    RuntimeWarning,
+                )
+
+            selected_doc_keys = sorted(common_doc_keys)
+            if self.cfg.sampling is not None:
+                rng = random.Random(self.cfg.split_seed)
+                rng.shuffle(selected_doc_keys)
+                selected_doc_keys = selected_doc_keys[: self.cfg.sampling]
+            selected_doc_key_set = set(selected_doc_keys)
+
             self.state.selected_strategy_files_by_dataset[dataset_name] = selected_strategy_files
             self.state.records_by_dataset_strategy[dataset_name] = {}
             for strategy, path in selected_strategy_files.items():
-                records = self.read_jsonl(path)
-                if self.cfg.sampling is not None:
-                    rng = random.Random(self.cfg.split_seed)
-                    records = records.copy()
-                    rng.shuffle(records)
-                    records = records[: self.cfg.sampling]
+                records = [
+                    record
+                    for record_index, record in enumerate(records_by_strategy[strategy])
+                    if self.record_doc_key(record, "record", record_index)
+                    in selected_doc_key_set
+                ]
                 self.state.records_by_dataset_strategy[dataset_name][strategy] = records
                 read_summary_rows.append(
                     {
@@ -188,7 +251,7 @@ class DataPipeline:
         for records_by_strategy in self.state.records_by_dataset_strategy.values():
             for records in records_by_strategy.values():
                 for rec in records:
-                    for label in rec.get("labels", []):
+                    for label in canonical_labels_from_record(rec, self.cfg.ignore_label):
                         if self.is_real_label(label):
                             label_set.add(label)
         self.state.label_list = self.sort_bio_labels(label_set)
@@ -228,7 +291,7 @@ class DataPipeline:
         entity_counts_by_doc = defaultdict(Counter)
         for strategy, records in records_by_strategy.items():
             for rec_idx, rec in enumerate(records):
-                doc_key = self.record_doc_key(rec, strategy, rec_idx)
+                doc_key = self.record_doc_key(rec, "record", rec_idx)
                 for label in rec.get("labels", []):
                     normalized = self.normalize_label_name(label)
                     if normalized is None or normalized == "O":
@@ -236,7 +299,7 @@ class DataPipeline:
                     entity_counts_by_doc[doc_key][normalized] += 1
         all_doc_keys = sorted(
             {
-                self.record_doc_key(rec, strategy, rec_idx)
+                self.record_doc_key(rec, "record", rec_idx)
                 for strategy, records in records_by_strategy.items()
                 for rec_idx, rec in enumerate(records)
             }
@@ -383,7 +446,7 @@ class DataPipeline:
             for fold_index, assignment in assignments_by_fold.items():
                 for strategy, records in records_by_strategy.items():
                     strategy_doc_keys = sorted(
-                        {self.record_doc_key(rec, strategy, i) for i, rec in enumerate(records)}
+                        {self.record_doc_key(rec, "record", i) for i, rec in enumerate(records)}
                     )
                     counts = Counter((assignment[k] for k in strategy_doc_keys))
                     n_docs = len(strategy_doc_keys)
@@ -424,6 +487,392 @@ class DataPipeline:
                 label_ids.append(self.cfg.ignore_label)
         return label_ids
 
+    def _training_record_view(self, record: dict) -> dict[str, Any]:
+        """Normalize old/new serialized records without requiring regeneration."""
+        tokens = list(record.get("tokens", []))
+        raw_labels = list(record.get("labels", []))
+        if len(tokens) != len(raw_labels):
+            raise ValueError(
+                f"Serialized record has {len(tokens)} tokens but {len(raw_labels)} labels."
+            )
+        n_items = len(tokens)
+
+        sources = record.get("source_token_indices")
+        if not isinstance(sources, list) or len(sources) != n_items:
+            sources = []
+            next_source = 0
+            for label in raw_labels:
+                if label in {self.cfg.ignore_label, str(self.cfg.ignore_label), None}:
+                    sources.append(None)
+                else:
+                    sources.append(next_source)
+                    next_source += 1
+        sources = [None if value is None else int(value) for value in sources]
+
+        roles = record.get("layout_roles")
+        if not isinstance(roles, list) or len(roles) != n_items:
+            roles = ["ocr_token" if source is not None else "layout" for source in sources]
+        roles = [str(role or ("ocr_token" if source is not None else "layout")) for role, source in zip(roles, sources)]
+
+        canonical_labels = canonical_labels_from_record(record, self.cfg.ignore_label)
+        serialized_labels = rebuild_bio_for_source_order(
+            canonical_labels,
+            sources,
+            ignore_label=self.cfg.ignore_label,
+        )
+
+        normalized_tokens = []
+        for token, source, role in zip(tokens, sources, roles):
+            if source is None or role != "ocr_token":
+                normalized_tokens.append(canonical_layout_token(role))
+            else:
+                text = str(token)
+                normalized_tokens.append(text if text.strip() else "<EMPTY_OCR>")
+
+        def aligned_list(key: str, default):
+            values = record.get(key)
+            if not isinstance(values, list) or len(values) != n_items:
+                return [default() if callable(default) else default for _ in range(n_items)]
+            return list(values)
+
+        return {
+            "tokens": normalized_tokens,
+            "labels": serialized_labels,
+            "source_token_indices": sources,
+            "layout_roles": roles,
+            "item_attrs": aligned_list("item_attrs", dict),
+            "pages": aligned_list("pages", None),
+            "normalized_bboxes": aligned_list("normalized_bboxes", None),
+            "canonical_labels": canonical_labels,
+            "original_token_count": len(canonical_labels),
+        }
+
+    @staticmethod
+    def _record_source_views(view: dict[str, Any]) -> list[dict[str, Any]]:
+        """Attach layout items to real OCR tokens and track active group markers."""
+        persistent_roles = {"page", "block", "line", "column", "xycut_region"}
+        active: dict[str, int] = {}
+        pending_prefix: list[int] = []
+        views: list[dict[str, Any]] = []
+        seen_sources: set[int] = set()
+
+        for position, (source, role) in enumerate(
+            zip(view["source_token_indices"], view["layout_roles"])
+        ):
+            if source is None:
+                if role in persistent_roles:
+                    if role == "page":
+                        active.clear()
+                    elif role in {"block", "column", "xycut_region"}:
+                        active.pop("line", None)
+                    active[role] = position
+                elif role == "coord_suffix" and views:
+                    views[-1]["suffix"].append(position)
+                else:
+                    pending_prefix.append(position)
+                continue
+
+            source_index = int(source)
+            if source_index in seen_sources:
+                raise AssertionError(f"Duplicate source_token_index {source_index} in one record.")
+            seen_sources.add(source_index)
+            views.append(
+                {
+                    "source": source_index,
+                    "active": dict(active),
+                    "prefix": pending_prefix,
+                    "real": position,
+                    "suffix": [],
+                }
+            )
+            pending_prefix = []
+
+        if pending_prefix and views:
+            views[-1]["suffix"].extend(pending_prefix)
+        return views
+
+    @staticmethod
+    def _source_view_lookup(views: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
+        return {int(source_view["source"]): source_view for source_view in views}
+
+    @staticmethod
+    def _render_source_window(
+        source_views_by_id: dict[int, dict[str, Any]],
+        selected_sources: set[int],
+    ) -> list[int]:
+        priority = ("page", "block", "column", "xycut_region", "line")
+        positions: list[int] = []
+        previous_active: dict[str, int] = {}
+        selected_views = sorted(
+            (source_views_by_id[source] for source in selected_sources),
+            key=lambda source_view: int(source_view["real"]),
+        )
+        for source_view in selected_views:
+            active = source_view["active"]
+            for role in priority:
+                marker_position = active.get(role)
+                if marker_position is not None and previous_active.get(role) != marker_position:
+                    positions.append(marker_position)
+            positions.extend(source_view["prefix"])
+            positions.append(source_view["real"])
+            positions.extend(source_view["suffix"])
+            previous_active = dict(active)
+        return positions
+
+    @staticmethod
+    def _wordpiece_lengths(tokenizer, words: list[str]) -> list[int]:
+        if not words:
+            return []
+        encoded = tokenizer(
+            words,
+            is_split_into_words=True,
+            add_special_tokens=False,
+            truncation=False,
+        )
+        lengths = [0] * len(words)
+        for word_id in encoded.word_ids():
+            if word_id is not None:
+                lengths[int(word_id)] += 1
+        return lengths
+
+    def _record_slots(self, strategy: str, records: list[dict]) -> dict[tuple[str, int], tuple[int, dict]]:
+        occurrences: dict[str, int] = defaultdict(int)
+        slots = {}
+        for record_index, record in enumerate(records):
+            doc_key = self.record_doc_key(record, "record", record_index)
+            occurrence = occurrences[doc_key]
+            occurrences[doc_key] += 1
+            slots[(doc_key, occurrence)] = (record_index, record)
+        return slots
+
+    def _example_from_positions(
+        self,
+        *,
+        dataset_name: str,
+        strategy: str,
+        doc_key: str,
+        record_index: int,
+        chunk_index: int,
+        source_ids: list[int],
+        positions: list[int],
+        view: dict[str, Any],
+    ) -> dict[str, Any]:
+        tokens = [view["tokens"][position] for position in positions]
+        labels = [view["labels"][position] for position in positions]
+        word_label_ids = repair_bio_label_ids(
+            self.normalize_record_labels(labels),
+            id2label=self.state.id2label,
+            label2id=self.state.label2id,
+            ignore_label=self.cfg.ignore_label,
+        )
+        word_sources = [view["source_token_indices"][position] for position in positions]
+        metric_gold_ids = []
+        word_bboxes = []
+        word_bbox_masks = []
+        word_pages = []
+        for position, source in zip(positions, word_sources):
+            if source is None:
+                metric_gold_ids.append(self.cfg.ignore_label)
+            else:
+                label = view["canonical_labels"][int(source)]
+                metric_gold_ids.append(self.state.label2id.get(label, self.state.label2id["O"]))
+
+            raw_bbox = view["normalized_bboxes"][position]
+            if (
+                isinstance(raw_bbox, (list, tuple))
+                and len(raw_bbox) == 4
+                and all(isinstance(value, (int, float, np.integer, np.floating)) for value in raw_bbox)
+            ):
+                bbox = [max(0, min(1000, int(round(value)))) for value in raw_bbox]
+                valid_bbox = bbox[2] >= bbox[0] and bbox[3] >= bbox[1]
+            else:
+                bbox = [0, 0, 0, 0]
+                valid_bbox = False
+            word_bboxes.append(bbox if valid_bbox else [0, 0, 0, 0])
+            word_bbox_masks.append(1 if valid_bbox else 0)
+            try:
+                page = int(view["pages"][position])
+            except (TypeError, ValueError):
+                page = -1
+            word_pages.append(page)
+
+        return {
+            "dataset_name": dataset_name,
+            "strategy": strategy,
+            "doc_key": doc_key,
+            "record_index": record_index,
+            "chunk_index": chunk_index,
+            "source_example_id": f"{doc_key}::{record_index}::{chunk_index}",
+            "word_start": source_ids[0],
+            "word_end": source_ids[-1] + 1,
+            "tokens": tokens,
+            "word_label_ids": word_label_ids,
+            "word_source_token_indices": [(-1 if value is None else int(value)) for value in word_sources],
+            "word_metric_gold_label_ids": metric_gold_ids,
+            "word_bboxes": word_bboxes,
+            "word_bbox_masks": word_bbox_masks,
+            "word_page_ids": word_pages,
+            "metric_doc_key": doc_key,
+            "metric_record_index": record_index,
+            "metric_original_token_count": view["original_token_count"],
+        }
+
+    def _ensure_fair_examples(
+        self,
+        dataset_name: str,
+        model_spec: ModelSpec,
+        tokenizer,
+    ) -> dict[str, list[dict]]:
+        max_length = self.effective_max_length(tokenizer)
+        cache_key = (
+            dataset_name,
+            model_spec.name,
+            model_spec.model_name_or_path,
+            getattr(tokenizer, "name_or_path", ""),
+            len(tokenizer),
+            max_length,
+        )
+
+        records_by_strategy = self.state.records_by_dataset_strategy[dataset_name]
+        strategies = sorted(records_by_strategy)
+        slot_maps = {
+            strategy: self._record_slots(strategy, records_by_strategy[strategy])
+            for strategy in strategies
+        }
+        slot_sets = [set(slots) for slots in slot_maps.values()]
+        common_slots = set.intersection(*slot_sets) if slot_sets else set()
+        if not common_slots:
+            raise AssertionError(f"{dataset_name}: strategies have no common document records.")
+        if any(slots != common_slots for slots in slot_sets):
+            warnings.warn(
+                f"{dataset_name}: strategy record sets differ; fair comparison uses "
+                f"the {len(common_slots)} common records only.",
+                RuntimeWarning,
+            )
+
+        special_count = int(tokenizer.num_special_tokens_to_add(pair=False))
+        usable_length = max_length - special_count
+        if usable_length <= 0:
+            raise ValueError(f"max_length={max_length} leaves no model content positions.")
+
+        output: dict[str, list[dict]] = {strategy: [] for strategy in strategies}
+        for doc_key, occurrence in sorted(common_slots):
+            prepared = {}
+            source_sets = []
+            reference_labels = None
+            for strategy in strategies:
+                record_index, record = slot_maps[strategy][(doc_key, occurrence)]
+                view = self._training_record_view(record)
+                source_views = self._record_source_views(view)
+                source_set = {item["source"] for item in source_views}
+                source_sets.append(source_set)
+                if reference_labels is None:
+                    reference_labels = view["canonical_labels"]
+                elif view["canonical_labels"] != reference_labels:
+                    raise AssertionError(
+                        f"{dataset_name}/{doc_key}: canonical gold labels differ across strategies."
+                    )
+                position_lengths = self._wordpiece_lengths(tokenizer, view["tokens"])
+                prepared[strategy] = {
+                    "record_index": record_index,
+                    "view": view,
+                    "source_views": source_views,
+                    "position_lengths": position_lengths,
+                }
+
+            common_sources = set.intersection(*source_sets) if source_sets else set()
+            if not common_sources:
+                continue
+            if any(sources != common_sources for sources in source_sets):
+                raise AssertionError(
+                    f"{dataset_name}/{doc_key}: source-token sets differ across strategies."
+                )
+            source_ids = sorted(common_sources)
+
+            start = 0
+            chunk_index = 0
+            while start < len(source_ids):
+                end = start
+                while end < len(source_ids):
+                    if self.cfg.word_window_size > 0 and end - start >= self.cfg.word_window_size:
+                        break
+                    candidate_sources = set(source_ids[start : end + 1])
+                    fits = True
+                    for strategy in strategies:
+                        item = prepared[strategy]
+                        positions = self._render_source_window(
+                            item["source_views"], candidate_sources
+                        )
+                        n_pieces = sum(item["position_lengths"][position] for position in positions)
+                        if n_pieces > usable_length:
+                            fits = False
+                            break
+                    if not fits:
+                        break
+                    end += 1
+
+                if end == start:
+                    raise ValueError(
+                        f"{dataset_name}/{doc_key}: OCR token {source_ids[start]} plus its layout "
+                        f"requires more than {usable_length} subtokens."
+                    )
+
+                # Avoid beginning the next non-overlapping window with I- when
+                # the complete entity can fit in the current source window.
+                while end > start + 1 and end < len(source_ids):
+                    next_label = str(reference_labels[source_ids[end]])
+                    if not next_label.startswith("I-"):
+                        break
+                    end -= 1
+
+                window_sources = source_ids[start:end]
+                selected = set(window_sources)
+                for strategy in strategies:
+                    item = prepared[strategy]
+                    positions = self._render_source_window(item["source_views"], selected)
+                    output[strategy].append(
+                        self._example_from_positions(
+                            dataset_name=dataset_name,
+                            strategy=strategy,
+                            doc_key=doc_key,
+                            record_index=item["record_index"],
+                            chunk_index=chunk_index,
+                            source_ids=window_sources,
+                            positions=positions,
+                            view=item["view"],
+                        )
+                    )
+
+                if end >= len(source_ids):
+                    break
+                overlap_words = self.cfg.word_window_stride
+                if overlap_words <= 0 and self.cfg.tokenizer_stride > 0:
+                    accumulated = 0
+                    cursor = end
+                    while cursor > start and accumulated < self.cfg.tokenizer_stride:
+                        cursor -= 1
+                        source = source_ids[cursor]
+                        worst = 0
+                        for strategy in strategies:
+                            item = prepared[strategy]
+                            positions = self._render_source_window(
+                                item["source_views"], {source}
+                            )
+                            worst = max(
+                                worst,
+                                sum(item["position_lengths"][position] for position in positions),
+                            )
+                        accumulated += worst
+                    overlap_words = end - cursor
+                start = max(start + 1, end - overlap_words)
+                chunk_index += 1
+
+        chunk_counts = {strategy: len(examples) for strategy, examples in output.items()}
+        if len(set(chunk_counts.values())) != 1:
+            raise AssertionError(f"Fair chunk planning produced unequal counts: {chunk_counts}")
+
+        return output
+
     def iter_word_windows(self, n_tokens: int):
         if n_tokens <= 0:
             return
@@ -452,7 +901,7 @@ class DataPipeline:
                 )
             if not tokens:
                 continue
-            doc_key = self.record_doc_key(rec, strategy, rec_idx)
+            doc_key = self.record_doc_key(rec, "record", rec_idx)
             word_label_ids = self.normalize_record_labels(labels)
             for chunk_idx, (start, end) in enumerate(self.iter_word_windows(len(tokens))):
                 chunk_tokens = [str(t) for t in tokens[start:end]]
@@ -524,6 +973,15 @@ class DataPipeline:
             raise ValueError(
                 f"Tokenizer for {model_spec.name} is not fast. Fast tokenizers are required because this pipeline uses word_ids() and overflow mappings."
             )
+        # Added vocabulary items are atomic but remain ordinary input words, so
+        # fast-tokenizer word_ids() keeps their word alignment for ignored labels.
+        tokenizer.add_tokens(list(ALL_LAYOUT_TOKENS), special_tokens=False)
+        for token in ALL_LAYOUT_TOKENS:
+            token_ids = tokenizer(token, add_special_tokens=False)["input_ids"]
+            if len(token_ids) != 1 or token_ids[0] == getattr(tokenizer, "unk_token_id", None):
+                raise AssertionError(
+                    f"Layout marker {token!r} is not one atomic non-UNK token for {model_spec.name}: {token_ids}."
+                )
         return tokenizer
 
     def effective_max_length(self, tokenizer) -> int:
@@ -549,79 +1007,113 @@ class DataPipeline:
             tokenized = tokenizer(
                 batch["tokens"],
                 is_split_into_words=True,
-                truncation=True,
+                truncation=False,
                 max_length=max_length,
-                stride=self.cfg.tokenizer_stride,
-                return_overflowing_tokens=True,
                 return_offsets_mapping=True,
-                padding=False,
+                padding="max_length",
             )
-            sample_mapping = [int(x) for x in tokenized["overflow_to_sample_mapping"]]
-            offsets = tokenized["offset_mapping"]
             aligned_labels: list[list[int]] = []
-            seen_word_ids: dict[int, set[int]] = defaultdict(set)
-            overflow_counts: dict[int, int] = defaultdict(int)
+            aligned_bboxes: list[list[list[int]]] = []
+            aligned_bbox_masks: list[list[int]] = []
+            aligned_page_ids: list[list[int]] = []
+            metric_source_rows: list[list[int]] = []
+            metric_gold_rows: list[list[int]] = []
             metadata_rows: list[dict[str, Any]] = []
             keep_indices: list[int] = []
-            for output_index, source_index in enumerate(sample_mapping):
-                word_label_ids = batch["word_label_ids"][source_index]
+
+            for output_index in range(len(batch["tokens"])):
                 word_ids = tokenized.word_ids(batch_index=output_index)
-                token_offsets = offsets[output_index]
+                word_label_ids = batch["word_label_ids"][output_index]
+                word_sources = batch["word_source_token_indices"][output_index]
+                word_metric_gold = batch["word_metric_gold_label_ids"][output_index]
+                word_bboxes = batch["word_bboxes"][output_index]
+                word_bbox_masks = batch["word_bbox_masks"][output_index]
+                word_pages = batch["word_page_ids"][output_index]
+
                 label_ids: list[int] = []
-                for word_idx, token_offset in zip(word_ids, token_offsets):
+                bbox_row: list[list[int]] = []
+                bbox_mask_row: list[int] = []
+                page_row: list[int] = []
+                metric_source_row: list[int] = []
+                metric_gold_row: list[int] = []
+                seen_words: set[int] = set()
+                previous_word_idx = None
+
+                for word_idx in word_ids:
                     if word_idx is None:
                         label_ids.append(self.cfg.ignore_label)
+                        bbox_row.append([0, 0, 0, 0])
+                        bbox_mask_row.append(0)
+                        page_row.append(-1)
+                        metric_source_row.append(-1)
+                        metric_gold_row.append(self.cfg.ignore_label)
+                        previous_word_idx = None
                         continue
-                    seen_word_ids[source_index].add(int(word_idx))
-                    original_label_id = word_label_ids[word_idx]
-                    if original_label_id == self.cfg.ignore_label:
-                        label_ids.append(self.cfg.ignore_label)
-                        continue
-                    is_first_subtoken = int(token_offset[0]) == 0
+
+                    word_idx = int(word_idx)
+                    is_first_subtoken = word_idx != previous_word_idx
+                    seen_words.add(word_idx)
+                    bbox_row.append(list(word_bboxes[word_idx]))
+                    bbox_mask_row.append(int(word_bbox_masks[word_idx]))
+                    page_row.append(int(word_pages[word_idx]))
                     if is_first_subtoken:
-                        label_ids.append(original_label_id)
+                        label_ids.append(int(word_label_ids[word_idx]))
+                        source_index = int(word_sources[word_idx])
+                        gold_id = int(word_metric_gold[word_idx])
+                        metric_source_row.append(source_index if source_index >= 0 else -1)
+                        metric_gold_row.append(gold_id if source_index >= 0 else self.cfg.ignore_label)
                     else:
-                        original_label = self.state.id2label[original_label_id]
-                        if original_label.startswith("B-"):
-                            inside_label = "I-" + original_label[2:]
-                            label_ids.append(
-                                self.state.label2id.get(inside_label, original_label_id)
-                            )
-                        else:
-                            label_ids.append(original_label_id)
+                        # One supervised/evaluated position per OCR/layout word.
+                        label_ids.append(self.cfg.ignore_label)
+                        metric_source_row.append(-1)
+                        metric_gold_row.append(self.cfg.ignore_label)
+                    previous_word_idx = word_idx
+
                 if len(label_ids) != len(tokenized["input_ids"][output_index]):
-                    raise AssertionError("Token and label lengths differ after alignment.")
-                overflow_index = overflow_counts[source_index]
-                overflow_counts[source_index] += 1
+                    raise AssertionError("Token and aligned feature lengths differ.")
+
                 should_keep = not self.cfg.drop_chunks_with_no_trainable_tokens or any(
-                    (label != self.cfg.ignore_label for label in label_ids)
+                    label != self.cfg.ignore_label for label in label_ids
                 )
                 if not should_keep:
                     continue
                 keep_indices.append(output_index)
                 aligned_labels.append(label_ids)
+                aligned_bboxes.append(bbox_row)
+                aligned_bbox_masks.append(bbox_mask_row)
+                aligned_page_ids.append(page_row)
+                metric_source_rows.append(metric_source_row)
+                metric_gold_rows.append(metric_gold_row)
                 metadata_rows.append(
                     {
-                        "dataset_name": batch["dataset_name"][source_index],
-                        "strategy": batch["strategy"][source_index],
-                        "doc_key": batch["doc_key"][source_index],
-                        "record_index": batch["record_index"][source_index],
-                        "chunk_index": batch["chunk_index"][source_index],
-                        "source_example_id": batch["source_example_id"][source_index],
-                        "word_start": batch["word_start"][source_index],
-                        "word_end": batch["word_end"][source_index],
-                        "overflow_index": overflow_index,
-                        "n_source_words": len(batch["tokens"][source_index]),
-                        "n_subtokens": len(tokenized["input_ids"][output_index]),
+                        "dataset_name": batch["dataset_name"][output_index],
+                        "strategy": batch["strategy"][output_index],
+                        "doc_key": batch["doc_key"][output_index],
+                        "record_index": batch["record_index"][output_index],
+                        "chunk_index": batch["chunk_index"][output_index],
+                        "source_example_id": batch["source_example_id"][output_index],
+                        "word_start": batch["word_start"][output_index],
+                        "word_end": batch["word_end"][output_index],
+                        "overflow_index": 0,
+                        "n_source_words": len(batch["tokens"][output_index]),
+                        "n_subtokens": int(sum(tokenized["attention_mask"][output_index])),
+                        "metric_doc_key": batch["metric_doc_key"][output_index],
+                        "metric_record_index": batch["metric_record_index"][output_index],
+                        "metric_original_token_count": batch["metric_original_token_count"][output_index],
                     }
                 )
 
             result = {
-                key: [values[i] for i in keep_indices]
+                key: [values[index] for index in keep_indices]
                 for key, values in tokenized.items()
-                if key not in {"overflow_to_sample_mapping", "offset_mapping"}
+                if key != "offset_mapping"
             }
             result["labels"] = aligned_labels
+            result["bbox"] = aligned_bboxes
+            result["bbox_mask"] = aligned_bbox_masks
+            result["page_ids"] = aligned_page_ids
+            result["metric_source_indices"] = metric_source_rows
+            result["metric_gold_labels"] = metric_gold_rows
             for key in metadata_rows[0].keys() if metadata_rows else []:
                 result[key] = [row[key] for row in metadata_rows]
             return result
@@ -631,7 +1123,7 @@ class DataPipeline:
     def tokenize_dataset_strategy_once(
         self, dataset_name: str, strategy: str, model_spec: ModelSpec, tokenizer
     ) -> TokenizedCorpus:
-        examples = self.state.examples_by_dataset_strategy[dataset_name][strategy]
+        examples = self._ensure_fair_examples(dataset_name, model_spec, tokenizer)[strategy]
         base_dataset = Dataset.from_list(examples)
         tokenize_fn, effective_max_length = self.make_tokenize_and_align_labels_fn(tokenizer)
         map_kwargs: dict[str, Any] = {
@@ -668,7 +1160,10 @@ class DataPipeline:
             "n_docs": len(indices_by_doc_key),
             "mean_subtokens": float(np.mean(lengths)) if lengths else 0.0,
             "max_subtokens": max(lengths, default=0),
-            "n_overflow_chunks": max(0, len(tokenized_dataset) - len(examples)),
+            "n_overflow_chunks": 0,
+            "shared_source_windows": True,
+            "padded_subtokens_per_chunk": effective_max_length,
+            "total_padded_subtokens": len(tokenized_dataset) * effective_max_length,
         }
         self.state.tokenization_summary_rows.append(summary)
         pd.DataFrame(self.state.tokenization_summary_rows).to_csv(
