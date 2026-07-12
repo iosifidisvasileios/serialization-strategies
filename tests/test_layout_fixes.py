@@ -18,6 +18,7 @@ from src.training.layout_model import (  # noqa: E402
     ALL_LAYOUT_TOKENS,
     NumericLayoutTokenClassifier,
     canonical_layout_token,
+    canonical_layout_value_token,
 )
 from src.training.ocr_metrics import (  # noqa: E402
     aggregate_ocr_predictions,
@@ -103,9 +104,9 @@ class LayoutFixTests(unittest.TestCase):
         self.assertEqual(canonical_layout_token("compact_bbox"), "[LAYOUT_BBOX]")
         self.assertEqual(canonical_layout_token("coord_suffix"), "[LAYOUT_COORD]")
         self.assertEqual(canonical_layout_token("unseen_role"), "[LAYOUT_UNKNOWN]")
-        self.assertLess(len(ALL_LAYOUT_TOKENS), 32)
+        self.assertLess(len(ALL_LAYOUT_TOKENS), 2048)
 
-    def test_atomic_marker_preserves_original_value(self):
+    def test_atomic_marker_preserves_bounded_value_code(self):
         pipeline = DataPipeline(
             ExperimentConfig(project_root=ROOT, n_folds=2, enforce_minimum_versions=False)
         )
@@ -118,7 +119,10 @@ class LayoutFixTests(unittest.TestCase):
                 "original_token_labels": ["O"],
             }
         )
-        self.assertEqual(view["tokens"], ["[LAYOUT_ROW] [R_12]", "Invoice"])
+        self.assertEqual(
+            view["tokens"],
+            [f"[LAYOUT_ROW] {canonical_layout_value_token('[R_12]')}", "Invoice"],
+        )
 
     def test_shared_windows_equalize_plain_and_heavy_strategies(self):
         cfg = ExperimentConfig(
@@ -176,6 +180,19 @@ class LayoutFixTests(unittest.TestCase):
             [(row["word_start"], row["word_end"]) for row in examples["plain_text"]],
             [(row["word_start"], row["word_end"]) for row in examples["rowcol_bucket"]],
         )
+        self.assertIs(
+            examples,
+            pipeline._ensure_fair_examples(
+                "sample", ModelSpec("tiny", "tiny"), TinyTokenizer()
+            ),
+        )
+
+        pipeline.state.fair_window_plan_cache.clear()
+        plain["original_token_count"] = heavy["original_token_count"] = 5
+        with self.assertRaisesRegex(AssertionError, "incomplete OCR source coverage"):
+            pipeline._ensure_fair_examples(
+                "sample", ModelSpec("tiny", "tiny"), TinyTokenizer()
+            )
 
     def test_source_window_lookup_handles_reordered_tokens(self):
         views = [

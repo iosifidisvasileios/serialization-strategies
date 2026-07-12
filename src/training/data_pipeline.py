@@ -24,7 +24,11 @@ if str(ROOT / "src" / "training") not in sys.path:
 
 try:
     from .experiment_config import ExperimentConfig, ModelSpec
-    from .layout_model import ALL_LAYOUT_TOKENS, canonical_layout_token
+    from .layout_model import (
+        ALL_LAYOUT_TOKENS,
+        canonical_layout_token,
+        canonical_layout_value_token,
+    )
     from .ocr_metrics import (
         canonical_labels_from_record,
         rebuild_bio_for_source_order,
@@ -32,7 +36,7 @@ try:
     )
 except ImportError:
     from experiment_config import ExperimentConfig, ModelSpec
-    from layout_model import ALL_LAYOUT_TOKENS, canonical_layout_token
+    from layout_model import ALL_LAYOUT_TOKENS, canonical_layout_token, canonical_layout_value_token
     from ocr_metrics import (
         canonical_labels_from_record,
         rebuild_bio_for_source_order,
@@ -57,7 +61,7 @@ class ExperimentData:
     cv_assignment_dfs: dict[str, pd.DataFrame] = field(default_factory=dict)
     split_plan_paths: dict[str, Path] = field(default_factory=dict)
     examples_by_dataset_strategy: dict[str, dict[str, list[dict]]] = field(default_factory=dict)
-    fair_window_plan_cache: dict[tuple[Any, ...], list[dict[str, Any]]] = field(
+    fair_window_plan_cache: dict[tuple[Any, ...], dict[str, list[dict[str, Any]]]] = field(
         default_factory=dict
     )
     tokenization_summary_rows: list[dict[str, Any]] = field(default_factory=list)
@@ -529,7 +533,7 @@ class DataPipeline:
                 normalized_tokens.append(
                     role_token
                     if not value_token or value_token == role_token
-                    else f"{role_token} {value_token}"
+                    else f"{role_token} {canonical_layout_value_token(value_token)}"
                 )
             else:
                 text = str(token)
@@ -738,6 +742,9 @@ class DataPipeline:
             len(tokenizer),
             max_length,
         )
+        cached = self.state.fair_window_plan_cache.get(cache_key)
+        if cached is not None:
+            return cached
 
         records_by_strategy = self.state.records_by_dataset_strategy[dataset_name]
         strategies = sorted(records_by_strategy)
@@ -792,6 +799,14 @@ class DataPipeline:
             if any(sources != common_sources for sources in source_sets):
                 raise AssertionError(
                     f"{dataset_name}/{doc_key}: source-token sets differ across strategies."
+                )
+            expected_sources = set(range(len(reference_labels)))
+            if common_sources != expected_sources:
+                missing = sorted(expected_sources - common_sources)
+                extra = sorted(common_sources - expected_sources)
+                raise AssertionError(
+                    f"{dataset_name}/{doc_key}: incomplete OCR source coverage; "
+                    f"missing={missing[:10]}, extra={extra[:10]}."
                 )
             source_ids = sorted(common_sources)
 
@@ -891,6 +906,7 @@ class DataPipeline:
         if len(set(chunk_counts.values())) != 1:
             raise AssertionError(f"Fair chunk planning produced unequal counts: {chunk_counts}")
 
+        self.state.fair_window_plan_cache[cache_key] = output
         return output
 
     def iter_word_windows(self, n_tokens: int):
