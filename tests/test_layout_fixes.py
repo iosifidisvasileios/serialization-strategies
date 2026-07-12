@@ -12,20 +12,20 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "src" / "training"))
 
-from data_pipeline import DataPipeline  # noqa: E402
-from experiment_config import ExperimentConfig, ModelSpec  # noqa: E402
-from layout_model import (  # noqa: E402
+from src.training.data_pipeline import DataPipeline  # noqa: E402
+from src.training.experiment_config import ExperimentConfig, ModelSpec  # noqa: E402
+from src.training.layout_model import (  # noqa: E402
     ALL_LAYOUT_TOKENS,
     NumericLayoutTokenClassifier,
     canonical_layout_token,
 )
-from ocr_metrics import (  # noqa: E402
+from src.training.ocr_metrics import (  # noqa: E402
     aggregate_ocr_predictions,
     entity_metrics,
     rebuild_bio_for_source_order,
     repair_bio_label_ids,
 )
-from serialization.base import rebuild_bio_labels_for_serialized_order  # noqa: E402
+from src.serialization.base import rebuild_bio_labels_for_serialized_order  # noqa: E402
 
 
 class TinyEncoding(dict):

@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 import warnings
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import asdict, dataclass, field
@@ -29,13 +30,30 @@ from transformers import (
     set_seed,
 )
 from transformers.utils import logging as transformers_logging
-from data_pipeline import DataPipeline, ExperimentData, TokenizedCorpus
-from experiment_config import ExperimentConfig, ModelSpec
-from layout_model import (
-    DataCollatorForTokenClassificationWithLayout,
-    NumericLayoutTokenClassifier,
-)
-from ocr_metrics import aggregate_ocr_predictions, entity_metrics
+
+# Add parent directories to path for direct script execution
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(ROOT / "src"))
+if str(ROOT / "src" / "training") not in sys.path:
+    sys.path.insert(0, str(ROOT / "src" / "training"))
+
+try:
+    from .data_pipeline import DataPipeline, ExperimentData, TokenizedCorpus
+    from .experiment_config import ExperimentConfig, ModelSpec
+    from .layout_model import (
+        DataCollatorForTokenClassificationWithLayout,
+        NumericLayoutTokenClassifier,
+    )
+    from .ocr_metrics import aggregate_ocr_predictions, entity_metrics
+except ImportError:
+    from data_pipeline import DataPipeline, ExperimentData, TokenizedCorpus
+    from experiment_config import ExperimentConfig, ModelSpec
+    from layout_model import (
+        DataCollatorForTokenClassificationWithLayout,
+        NumericLayoutTokenClassifier,
+    )
+    from ocr_metrics import aggregate_ocr_predictions, entity_metrics
 
 try:
     from datasets import disable_progress_bar as disable_datasets_progress_bar

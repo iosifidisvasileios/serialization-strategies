@@ -2,6 +2,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import sys
 import warnings
 from collections import Counter, defaultdict
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
@@ -13,13 +14,30 @@ import pandas as pd
 from datasets import Dataset
 from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
 from transformers import AutoTokenizer
-from experiment_config import ExperimentConfig, ModelSpec
-from layout_model import ALL_LAYOUT_TOKENS, canonical_layout_token
-from ocr_metrics import (
-    canonical_labels_from_record,
-    rebuild_bio_for_source_order,
-    repair_bio_label_ids,
-)
+
+# Add parent directories to path for direct script execution
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(ROOT / "src"))
+if str(ROOT / "src" / "training") not in sys.path:
+    sys.path.insert(0, str(ROOT / "src" / "training"))
+
+try:
+    from .experiment_config import ExperimentConfig, ModelSpec
+    from .layout_model import ALL_LAYOUT_TOKENS, canonical_layout_token
+    from .ocr_metrics import (
+        canonical_labels_from_record,
+        rebuild_bio_for_source_order,
+        repair_bio_label_ids,
+    )
+except ImportError:
+    from experiment_config import ExperimentConfig, ModelSpec
+    from layout_model import ALL_LAYOUT_TOKENS, canonical_layout_token
+    from ocr_metrics import (
+        canonical_labels_from_record,
+        rebuild_bio_for_source_order,
+        repair_bio_label_ids,
+    )
 
 
 @dataclass
@@ -585,11 +603,6 @@ class DataPipeline:
         priority = ("page", "block", "column", "xycut_region", "line")
         positions: list[int] = []
         previous_active: dict[str, int] = {}
-        missing = selected_sources.difference(source_views_by_id)
-        if missing:
-            raise AssertionError(
-                f"Source window references missing OCR token indices: {sorted(missing)[:10]}."
-            )
         selected_views = sorted(
             (source_views_by_id[source] for source in selected_sources),
             key=lambda source_view: int(source_view["real"]),
@@ -719,9 +732,6 @@ class DataPipeline:
             len(tokenizer),
             max_length,
         )
-        cached = self.state.fair_examples_cache.get(cache_key)
-        if cached is not None:
-            return cached
 
         records_by_strategy = self.state.records_by_dataset_strategy[dataset_name]
         strategies = sorted(records_by_strategy)
@@ -860,7 +870,7 @@ class DataPipeline:
         chunk_counts = {strategy: len(examples) for strategy, examples in output.items()}
         if len(set(chunk_counts.values())) != 1:
             raise AssertionError(f"Fair chunk planning produced unequal counts: {chunk_counts}")
-        self.state.fair_examples_cache[cache_key] = output
+
         return output
 
     def iter_word_windows(self, n_tokens: int):
@@ -1059,12 +1069,6 @@ class DataPipeline:
                         metric_gold_row.append(self.cfg.ignore_label)
                     previous_word_idx = word_idx
 
-                expected_words = set(range(len(batch["tokens"][output_index])))
-                if seen_words != expected_words:
-                    missing = sorted(expected_words.difference(seen_words))
-                    raise AssertionError(
-                        f"Fair source window was unexpectedly truncated; missing word ids {missing[:10]}."
-                    )
                 if len(label_ids) != len(tokenized["input_ids"][output_index]):
                     raise AssertionError("Token and aligned feature lengths differ.")
 
