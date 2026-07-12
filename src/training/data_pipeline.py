@@ -817,13 +817,27 @@ class DataPipeline:
                         f"requires more than {usable_length} subtokens."
                     )
 
-                # Avoid beginning the next non-overlapping window with I- when
-                # the complete entity can fit in the current source window.
-                while end > start + 1 and end < len(source_ids):
+                # Move an entity wholly into the next window only when its B-
+                # token is inside this window.  If it starts at/before `start`,
+                # it is longer than the available capacity, so keep the maximal
+                # fitting window and repair the next window's initial I- to B-.
+                if end < len(source_ids):
                     next_label = str(reference_labels[source_ids[end]])
-                    if not next_label.startswith("I-"):
-                        break
-                    end -= 1
+                    if next_label.startswith("I-"):
+                        entity = next_label[2:]
+                        entity_start = end
+                        while (
+                            entity_start > start
+                            and str(reference_labels[source_ids[entity_start]])
+                            == f"I-{entity}"
+                        ):
+                            entity_start -= 1
+                        if (
+                            entity_start > start
+                            and str(reference_labels[source_ids[entity_start]])
+                            == f"B-{entity}"
+                        ):
+                            end = entity_start
 
                 window_sources = source_ids[start:end]
                 selected = set(window_sources)

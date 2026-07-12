@@ -171,6 +171,43 @@ class LayoutFixTests(unittest.TestCase):
         lookup = DataPipeline._source_view_lookup(views)
         self.assertEqual(DataPipeline._render_source_window(lookup, {0}), [1])
 
+    def test_entity_longer_than_window_keeps_maximal_chunks(self):
+        cfg = ExperimentConfig(
+            project_root=ROOT,
+            max_length=8,
+            word_window_size=0,
+            n_folds=2,
+            enforce_minimum_versions=False,
+        )
+        pipeline = DataPipeline(cfg)
+        pipeline.state.label_list = ["O", "B-X", "I-X"]
+        pipeline.state.label2id = {label: idx for idx, label in enumerate(pipeline.state.label_list)}
+        pipeline.state.id2label = {idx: label for label, idx in pipeline.state.label2id.items()}
+        labels = ["B-X"] + ["I-X"] * 9
+        pipeline.state.records_by_dataset_strategy = {
+            "sample": {
+                "plain_text": [
+                    {
+                        "id": "doc",
+                        "tokens": [str(index) for index in range(10)],
+                        "labels": labels,
+                        "source_token_indices": list(range(10)),
+                        "layout_roles": ["ocr_token"] * 10,
+                        "normalized_bboxes": [[0, 0, 1, 1]] * 10,
+                        "pages": [0] * 10,
+                        "original_token_count": 10,
+                    }
+                ]
+            }
+        }
+        examples = pipeline._ensure_fair_examples(
+            "sample", ModelSpec("tiny", "tiny"), TinyTokenizer()
+        )["plain_text"]
+        self.assertEqual(
+            [example["word_end"] - example["word_start"] for example in examples],
+            [6, 4],
+        )
+
     def test_ocr_aggregation_deduplicates_and_rejoins_entities(self):
         columns = {
             "metric_source_indices": [[0, -1, -1], [1, -1, -1], [0, -1, -1]],
