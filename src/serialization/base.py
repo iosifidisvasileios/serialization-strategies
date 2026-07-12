@@ -10,6 +10,79 @@ from ..preprocessing.schema import CanonicalDocument, OCRToken
 IGNORE_LABEL = -100
 
 
+def _bio_entity_memberships(
+    token_labels: Sequence[str],
+) -> list[Optional[tuple[str, int]]]:
+    """Map canonical BIO labels to stable entity-instance identifiers.
+
+    Invalid/orphan ``I`` labels start a new entity instance.  Keeping the
+    instance id separate from the entity type lets serializers reorder tokens
+    without accidentally joining two adjacent entities of the same type.
+    """
+    memberships: list[Optional[tuple[str, int]]] = []
+    active_entity: Optional[str] = None
+    active_instance = -1
+
+    for raw_label in token_labels:
+        label = str(raw_label)
+        if label == "O" or label == str(IGNORE_LABEL) or "-" not in label:
+            memberships.append(None)
+            active_entity = None
+            continue
+
+        prefix, entity = label.split("-", 1)
+        if not entity:
+            memberships.append(None)
+            active_entity = None
+            continue
+
+        if prefix != "I" or active_entity != entity:
+            active_instance += 1
+        active_entity = entity
+        memberships.append((entity, active_instance))
+
+    return memberships
+
+
+def rebuild_bio_labels_for_serialized_order(
+    token_labels: Sequence[str],
+    source_token_indices: Sequence[Optional[int]],
+    *,
+    ignore_label: int = IGNORE_LABEL,
+) -> list[str | int]:
+    """Re-encode canonical BIO labels in the serializer's emitted order.
+
+    Synthetic layout items are transparent and retain ``ignore_label``.  A
+    reordered or separated entity run always starts with ``B``; adjacent real
+    tokens from the same canonical entity instance continue with ``I``.
+    """
+    memberships = _bio_entity_memberships(token_labels)
+    output: list[str | int] = []
+    previous_membership: Optional[tuple[str, int]] = None
+
+    for source_index in source_token_indices:
+        if source_index is None:
+            output.append(ignore_label)
+            continue
+        if source_index < 0 or source_index >= len(memberships):
+            raise IndexError(
+                f"source_token_index {source_index} is outside 0..{len(memberships) - 1}."
+            )
+
+        membership = memberships[source_index]
+        if membership is None:
+            output.append("O")
+            previous_membership = None
+            continue
+
+        entity, _ = membership
+        prefix = "I" if membership == previous_membership else "B"
+        output.append(f"{prefix}-{entity}")
+        previous_membership = membership
+
+    return output
+
+
 @dataclass(slots=True)
 class SerializedItem:
     """One emitted token/item in a serialized token-classification sequence.
@@ -115,10 +188,12 @@ class BaseSerializer(ABC):
                     f"got {len(token_labels)}. Run add_token_labels/filtering before serialization."
                 )
 
-            record["labels"] = [
-                token_labels[idx] if idx is not None else self.ignore_label
-                for idx in source_indices
-            ]
+            record["original_token_labels"] = list(token_labels)
+            record["labels"] = rebuild_bio_labels_for_serialized_order(
+                token_labels,
+                source_indices,
+                ignore_label=self.ignore_label,
+            )
 
         if self.include_offsets:
             record["offsets"] = [
