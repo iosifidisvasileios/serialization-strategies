@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 # Datasets
-from .datasets import (
+from .dataset_loaders import (
     BaseDatasetLoader,
     CharityReportLoader,
     FCCInvoiceLoader,
