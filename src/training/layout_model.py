@@ -25,6 +25,9 @@ LAYOUT_ROLE_TOKENS: dict[str, str] = {
     "xycut_region": "[LAYOUT_REGION]",
     "coord_suffix": "[LAYOUT_COORD]",
     "compact_bbox": "[LAYOUT_BBOX]",
+    "field": "[LAYOUT_FIELD]",
+    "key": "[LAYOUT_KEY]",
+    "value": "[LAYOUT_VALUE]",
 }
 UNKNOWN_LAYOUT_TOKEN = "[LAYOUT_UNKNOWN]"
 ALL_LAYOUT_TOKENS = tuple(sorted({*LAYOUT_ROLE_TOKENS.values(), UNKNOWN_LAYOUT_TOKEN}))
