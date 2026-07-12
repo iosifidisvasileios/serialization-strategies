@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import inspect
 from dataclasses import dataclass, field
 from typing import Any
@@ -28,25 +27,12 @@ LAYOUT_ROLE_TOKENS: dict[str, str] = {
     "compact_bbox": "[LAYOUT_BBOX]",
 }
 UNKNOWN_LAYOUT_TOKEN = "[LAYOUT_UNKNOWN]"
-LAYOUT_VALUE_BUCKETS = 1024
-LAYOUT_VALUE_TOKENS = tuple(
-    f"[LAYOUT_VALUE_{index}]" for index in range(LAYOUT_VALUE_BUCKETS)
-)
-ALL_LAYOUT_TOKENS = tuple(
-    sorted({*LAYOUT_ROLE_TOKENS.values(), UNKNOWN_LAYOUT_TOKEN, *LAYOUT_VALUE_TOKENS})
-)
+ALL_LAYOUT_TOKENS = tuple(sorted({*LAYOUT_ROLE_TOKENS.values(), UNKNOWN_LAYOUT_TOKEN}))
 
 
 def canonical_layout_token(role: Any) -> str:
     """Return a bounded, strategy-independent token for a layout item."""
     return LAYOUT_ROLE_TOKENS.get(str(role), UNKNOWN_LAYOUT_TOKEN)
-
-
-def canonical_layout_value_token(value: Any) -> str:
-    """Encode an arbitrary marker value as one stable, bounded atomic token."""
-    digest = hashlib.blake2s(str(value).encode("utf-8"), digest_size=2).digest()
-    bucket = int.from_bytes(digest, "big") % LAYOUT_VALUE_BUCKETS
-    return LAYOUT_VALUE_TOKENS[bucket]
 
 
 @dataclass

@@ -24,11 +24,7 @@ if str(ROOT / "src" / "training") not in sys.path:
 
 try:
     from .experiment_config import ExperimentConfig, ModelSpec
-    from .layout_model import (
-        ALL_LAYOUT_TOKENS,
-        canonical_layout_token,
-        canonical_layout_value_token,
-    )
+    from .layout_model import ALL_LAYOUT_TOKENS, canonical_layout_token
     from .ocr_metrics import (
         canonical_labels_from_record,
         rebuild_bio_for_source_order,
@@ -36,7 +32,7 @@ try:
     )
 except ImportError:
     from experiment_config import ExperimentConfig, ModelSpec
-    from layout_model import ALL_LAYOUT_TOKENS, canonical_layout_token, canonical_layout_value_token
+    from layout_model import ALL_LAYOUT_TOKENS, canonical_layout_token
     from ocr_metrics import (
         canonical_labels_from_record,
         rebuild_bio_for_source_order,
@@ -533,7 +529,7 @@ class DataPipeline:
                 normalized_tokens.append(
                     role_token
                     if not value_token or value_token == role_token
-                    else f"{role_token} {canonical_layout_value_token(value_token)}"
+                    else f"{role_token} {value_token}"
                 )
             else:
                 text = str(token)
@@ -687,7 +683,7 @@ class DataPipeline:
                 label = view["canonical_labels"][int(source)]
                 metric_gold_ids.append(self.state.label2id.get(label, self.state.label2id["O"]))
 
-            raw_bbox = view["normalized_bboxes"][position]
+            raw_bbox = None if strategy == "plain_text" else view["normalized_bboxes"][position]
             if (
                 isinstance(raw_bbox, (list, tuple))
                 and len(raw_bbox) == 4
@@ -700,10 +696,13 @@ class DataPipeline:
                 valid_bbox = False
             word_bboxes.append(bbox if valid_bbox else [0, 0, 0, 0])
             word_bbox_masks.append(1 if valid_bbox else 0)
-            try:
-                page = int(view["pages"][position])
-            except (TypeError, ValueError):
+            if strategy == "plain_text":
                 page = -1
+            else:
+                try:
+                    page = int(view["pages"][position])
+                except (TypeError, ValueError):
+                    page = -1
             word_pages.append(page)
 
         return {
