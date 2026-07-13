@@ -16,6 +16,8 @@ from .column_aware import ColumnAwareSerializer
 from .xycut_aware import XYCutAwareSerializer
 from .lmdx_coord_suffix import LMDXCoordSuffixSerializer
 from .compact_bbox_token import CompactBBoxTokenSerializer
+from .precedence_graph_order import PrecedenceGraphOrderSerializer
+from .key_value_pairs import KeyValueAnchorPairsSerializer, KeyValueRowPairsSerializer
 from .t5_json import T5JsonSerializer
 
 TOKEN_CLASSIFICATION_SERIALIZERS = {
@@ -29,6 +31,9 @@ TOKEN_CLASSIFICATION_SERIALIZERS = {
     "xycut_aware": XYCutAwareSerializer,
     "lmdx_coord_suffix": LMDXCoordSuffixSerializer,
     "compact_bbox_token": CompactBBoxTokenSerializer,
+    "precedence_graph_order": PrecedenceGraphOrderSerializer,
+    "key_value_row_pairs": KeyValueRowPairsSerializer,
+    "key_value_anchor_pairs": KeyValueAnchorPairsSerializer,
 }
 
 SEQ2SEQ_SERIALIZERS = {
@@ -64,6 +69,9 @@ __all__ = [
     "XYCutAwareSerializer",
     "LMDXCoordSuffixSerializer",
     "CompactBBoxTokenSerializer",
+    "PrecedenceGraphOrderSerializer",
+    "KeyValueRowPairsSerializer",
+    "KeyValueAnchorPairsSerializer",
     "T5JsonSerializer",
     "TOKEN_CLASSIFICATION_SERIALIZERS",
     "SEQ2SEQ_SERIALIZERS",
