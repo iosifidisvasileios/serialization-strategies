@@ -46,6 +46,7 @@ try:
         NumericLayoutTokenClassifier,
     )
     from .ocr_metrics import aggregate_ocr_predictions, entity_metrics
+    from .result_io import merge_csv_rows
 except ImportError:
     from data_pipeline import DataPipeline, ExperimentData, TokenizedCorpus
     from experiment_config import ExperimentConfig, ModelSpec
@@ -54,6 +55,7 @@ except ImportError:
         NumericLayoutTokenClassifier,
     )
     from ocr_metrics import aggregate_ocr_predictions, entity_metrics
+    from result_io import merge_csv_rows
 
 try:
     from datasets import disable_progress_bar as disable_datasets_progress_bar
@@ -902,13 +904,28 @@ class ExperimentRunner:
             print("No fold results produced.")
             return fold_results_df
         fold_results_path = self.cfg.results_root / "strategy_model_fold_results.csv"
-        fold_results_df.to_csv(fold_results_path, index=False)
+        fold_results_df = merge_csv_rows(
+            fold_results_df,
+            fold_results_path,
+            [
+                "dataset_name",
+                "strategy",
+                "model_name",
+                "model_name_or_path",
+                "initialization_mode",
+                "fold",
+            ],
+        )
         cv_summary_df = self.summarize_cv_results(
             fold_results_df,
             group_cols=["dataset_name", "strategy", "model_name", "model_name_or_path"],
         )
         cv_summary_path = self.cfg.results_root / "strategy_model_cv_summary.csv"
-        cv_summary_df.to_csv(cv_summary_path, index=False)
+        merge_csv_rows(
+            cv_summary_df,
+            cv_summary_path,
+            ["dataset_name", "strategy", "model_name", "model_name_or_path"],
+        )
         sort_col = (
             "test_non_o_micro_f1_mean"
             if "test_non_o_micro_f1_mean" in cv_summary_df.columns
@@ -1080,8 +1097,17 @@ class ExperimentRunner:
                     )
                     self.state.fold_results.append(result_row)
                     model_run_rows.append(result_row)
-                    pd.DataFrame(self.state.fold_results).to_csv(
-                        self.cfg.results_root / "strategy_model_fold_results.csv", index=False
+                    merge_csv_rows(
+                        pd.DataFrame([result_row]),
+                        self.cfg.results_root / "strategy_model_fold_results.csv",
+                        [
+                            "dataset_name",
+                            "strategy",
+                            "model_name",
+                            "model_name_or_path",
+                            "initialization_mode",
+                            "fold",
+                        ],
                     )
                 self._save_model_summary(
                     dataset_name=dataset_name,

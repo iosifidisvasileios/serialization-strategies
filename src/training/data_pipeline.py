@@ -30,6 +30,7 @@ try:
         rebuild_bio_for_source_order,
         repair_bio_label_ids,
     )
+    from .result_io import merge_csv_rows
 except ImportError:
     from experiment_config import ExperimentConfig, ModelSpec
     from layout_model import ALL_LAYOUT_TOKENS, canonical_layout_token
@@ -38,6 +39,7 @@ except ImportError:
         rebuild_bio_for_source_order,
         repair_bio_label_ids,
     )
+    from result_io import merge_csv_rows
 
 
 @dataclass
@@ -93,13 +95,25 @@ class DataPipeline:
 
     def prepare(self) -> None:
         read_summary = self.load_records()
-        read_summary.to_csv(self.cfg.results_root / "dataset_read_summary.csv", index=False)
+        merge_csv_rows(
+            read_summary,
+            self.cfg.results_root / "dataset_read_summary.csv",
+            ["dataset_name", "strategy"],
+        )
         label_df = self.build_label_maps()
-        label_df.to_csv(self.cfg.results_root / "label_map.csv", index=False)
+        merge_csv_rows(label_df, self.cfg.results_root / "label_map.csv", ["label"])
         split_summary = self.build_all_cv_assignments()
-        split_summary.to_csv(self.cfg.results_root / "strategy_split_summary.csv", index=False)
+        merge_csv_rows(
+            split_summary,
+            self.cfg.results_root / "strategy_split_summary.csv",
+            ["dataset_name", "strategy", "fold"],
+        )
         chunk_summary = self.build_examples()
-        chunk_summary.to_csv(self.cfg.results_root / "base_chunk_summary.csv", index=False)
+        merge_csv_rows(
+            chunk_summary,
+            self.cfg.results_root / "base_chunk_summary.csv",
+            ["dataset_name", "strategy"],
+        )
 
     @staticmethod
     def read_jsonl(path: Path) -> list[dict]:
@@ -1201,8 +1215,10 @@ class DataPipeline:
             "total_padded_subtokens": len(tokenized_dataset) * effective_max_length,
         }
         self.state.tokenization_summary_rows.append(summary)
-        pd.DataFrame(self.state.tokenization_summary_rows).to_csv(
-            self.cfg.results_root / "tokenization_summary.csv", index=False
+        merge_csv_rows(
+            pd.DataFrame([summary]),
+            self.cfg.results_root / "tokenization_summary.csv",
+            ["dataset_name", "strategy", "model_name", "model_name_or_path"],
         )
         self.qprint(
             f"Tokenized once: {dataset_name}/{strategy}/{model_spec.name}: {len(examples):,} base chunks -> {len(tokenized_dataset):,} model chunks."
